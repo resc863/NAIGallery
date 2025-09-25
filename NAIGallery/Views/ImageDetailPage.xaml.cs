@@ -16,6 +16,7 @@ using System.Collections.Generic; // added
 using Microsoft.UI.Xaml.Media.Animation;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics; // debug
 
 namespace NAIGallery.Views;
 
@@ -25,7 +26,8 @@ namespace NAIGallery.Views;
 /// </summary>
 public sealed partial class ImageDetailPage : Page
 {
-    private readonly ImageIndexService _service;
+    // Use interface to ensure we get the same singleton registered in DI (was concrete -> new instance -> missing metadata)
+    private readonly IImageIndexService _service;
     private double _currentScale = 1.0;
     private string? _pendingPath;
     private bool _initializedZoom = false;
@@ -63,7 +65,11 @@ public sealed partial class ImageDetailPage : Page
     public ImageDetailPage()
     {
         this.InitializeComponent();
-        _service = ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as ImageIndexService ?? new ImageIndexService();
+        // Resolve via interface; fall back only if DI not configured
+        _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService
+                    ?? ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as IImageIndexService
+                    ?? new ImageIndexService();
+        Debug.WriteLine($"[Detail][Init] Service instance hash={_service.GetHashCode()} indexed={_service.All.Count()} images");
         this.PointerWheelChanged += ImageDetailPage_PointerWheelChanged;
         this.SizeChanged += ImageDetailPage_SizeChanged;
         this.Loaded += ImageDetailPage_Loaded;
@@ -331,7 +337,8 @@ public sealed partial class ImageDetailPage : Page
             }
         }
         catch { }
-        return _service.GetSortedByFilePath();
+        // Fallback: deterministic name ordering from All
+        return _service.All.OrderBy(m => m.FilePath, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>
@@ -420,6 +427,10 @@ public sealed partial class ImageDetailPage : Page
                     });
                 }
             }
+            else
+            {
+                Debug.WriteLine($"[Detail][Warn] Metadata not found in service for {path}. IndexedCount={_service.All.Count()}");
+            }
 
             // Now load the full image (hinted to screen width to reduce memory)
             var bmp = new BitmapImage(new Uri(path));
@@ -443,6 +454,7 @@ public sealed partial class ImageDetailPage : Page
         {
             if (_service.TryGet(path, out var meta) && meta != null)
             {
+                Debug.WriteLine($"[Detail][Meta] File={Path.GetFileName(path)} PromptLen={(meta.Prompt?.Length ?? 0)} BasePrompt={(string.IsNullOrWhiteSpace(meta.BasePrompt)?"-":meta.BasePrompt[..Math.Min(30, meta.BasePrompt.Length)])} Tags={meta.Tags.Count} Params={(meta.Parameters?.Count ?? 0)}");
                 // Try to enrich with v4 fields if missing
                 _service.RefreshMetadata(meta);
 
@@ -484,8 +496,19 @@ public sealed partial class ImageDetailPage : Page
                     ParamsRepeater.ItemsSource = null;
                 }
             }
+            else
+            {
+                Debug.WriteLine($"[Detail][Meta] NO metadata for {path}");
+                // Clear UI if absent
+                BasePromptSection.Visibility = Visibility.Collapsed;
+                CharacterPromptSection.Visibility = Visibility.Collapsed;
+                CharacterPromptsRepeater.ItemsSource = null;
+                PromptText.Text = string.Empty;
+                NegativePromptText.Text = string.Empty;
+                ParamsRepeater.ItemsSource = null;
+            }
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"[Detail][Meta] Exception {ex.Message}"); }
     }
 
     private async System.Threading.Tasks.Task ShowErrorAsync(string message)

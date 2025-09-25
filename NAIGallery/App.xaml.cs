@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Windows.Storage; // for ApplicationData
 using Microsoft.UI.Dispatching; // DispatcherQueue
 using Microsoft.Extensions.Logging;
+using NAIGallery.Services.Metadata;
 
 namespace NAIGallery
 {
@@ -33,8 +34,15 @@ namespace NAIGallery
 #endif
                 builder.AddDebug();
             });
+
+            // Metadata extractors (composite allows future format additions)
+            services.AddSingleton<IMetadataExtractor>(sp => new CompositeMetadataExtractor(new IMetadataExtractor[]
+            {
+                new PngMetadataExtractor()
+                // Future: new JpegMetadataExtractor(), new WebpMetadataExtractor(), etc.
+            }));
+
             services.AddSingleton<IImageIndexService, ImageIndexService>();
-            services.AddSingleton<ThumbnailSchedulerService>(); // depends on IImageIndexService
             Services = services.BuildServiceProvider();
 
             // Apply persisted user settings to services when available

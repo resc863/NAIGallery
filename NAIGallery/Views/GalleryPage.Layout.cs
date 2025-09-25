@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using NAIGallery.Models;
+using NAIGallery.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -17,6 +18,11 @@ public sealed partial class GalleryPage
         if (_itemsHost != null) return _itemsHost;
         try
         {
+            // Ensure we only walk the visual tree on the UI thread to avoid COMException
+            if (DispatcherQueue?.HasThreadAccess != true)
+            {
+                return _itemsHost; // return cached (likely null) and try again later on UI thread
+            }
             if (GalleryView == null) return null;
             int count = VisualTreeHelper.GetChildrenCount(GalleryView);
             for (int i = 0; i < count; i++)
@@ -53,7 +59,7 @@ public sealed partial class GalleryPage
             }
         }
         catch { }
-        // existing fallback center-out logic
+        // Compute full logical visible range strictly from scroll metrics
         int cols2 = Math.Max(1, (int)((GalleryView?.ActualWidth > 0 ? GalleryView.ActualWidth : ActualWidth) / Math.Max(1, _baseItemSize)));
         double itemH2 = _baseItemSize;
         double offset2 = _scrollViewer.VerticalOffset;
@@ -63,14 +69,26 @@ public sealed partial class GalleryPage
         _viewStartIndex = Math.Max(0, startRow2 * cols2);
         _viewEndIndex = Math.Min((endRow2 + 1) * cols2 - 1, Math.Max(0, ViewModel.Images.Count - 1));
         int desiredWidth = GetDesiredDecodeWidth();
-        int start = _viewStartIndex; int end = _viewEndIndex; int mid = (start + end) / 2;
-        int lo = mid, hi = mid + 1;
-        while (lo >= start || hi <= end)
+        // When scrolling up, we want to prioritize from top to bottom so blanks at top fill immediately.
+        if (_scrollingUp)
         {
-            if (lo >= start)
-            { var m = ViewModel.Images[lo]; var cur = m.ThumbnailPixelWidth ?? 0; if (m.Thumbnail == null || cur + 32 < desiredWidth) EnqueueMeta(m, desiredWidth, highPriority: true); lo--; }
-            if (hi <= end)
-            { var m = ViewModel.Images[hi]; var cur = m.ThumbnailPixelWidth ?? 0; if (m.Thumbnail == null || cur + 32 < desiredWidth) EnqueueMeta(m, desiredWidth, highPriority: true); hi++; }
+            for (int i = _viewStartIndex; i <= _viewEndIndex; i++)
+            {
+                var m = ViewModel.Images[i]; var cur = m.ThumbnailPixelWidth ?? 0; if (m.Thumbnail == null || cur + 32 < desiredWidth) EnqueueMeta(m, desiredWidth, highPriority: true);
+            }
+        }
+        else
+        {
+            // Center-out order for downward / neutral scroll
+            int start = _viewStartIndex; int end = _viewEndIndex; int mid = (start + end) / 2;
+            int lo = mid, hi = mid + 1;
+            while (lo >= start || hi <= end)
+            {
+                if (lo >= start)
+                { var m = ViewModel.Images[lo]; var cur = m.ThumbnailPixelWidth ?? 0; if (m.Thumbnail == null || cur + 32 < desiredWidth) EnqueueMeta(m, desiredWidth, highPriority: true); lo--; }
+                if (hi <= end)
+                { var m = ViewModel.Images[hi]; var cur = m.ThumbnailPixelWidth ?? 0; if (m.Thumbnail == null || cur + 32 < desiredWidth) EnqueueMeta(m, desiredWidth, highPriority: true); hi++; }
+            }
         }
         BoostCurrentVisible(desiredWidth);
     }
@@ -87,7 +105,7 @@ public sealed partial class GalleryPage
                 var m = ViewModel.Images[i];
                 if ((m.ThumbnailPixelWidth ?? 0) < desiredWidth) slice.Add(m);
             }
-            if (slice.Count > 0) _thumbScheduler.BoostVisible(slice, desiredWidth);
+            if (slice.Count > 0) (_service as ImageIndexService)?.BoostVisible(slice, desiredWidth);
         }
         catch { }
     }
@@ -159,12 +177,13 @@ public sealed partial class GalleryPage
         if (candidates.Count == 0) return false;
         if (_scrollingUp)
         {
+            // Strongly prefer items above the visual center to fill blanks on upward scroll.
             for (int i = 0; i < candidates.Count; i++)
             {
                 if (candidates[i].y < centerLine)
                 {
                     var ctuple = candidates[i];
-                    ctuple.dist *= 0.7;
+                    ctuple.dist *= 0.5; // stronger bias than before
                     candidates[i] = ctuple;
                 }
             }

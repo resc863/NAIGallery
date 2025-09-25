@@ -24,12 +24,26 @@ public sealed partial class GalleryPage : Page
 {
     public GalleryViewModel ViewModel { get; }
     private readonly IImageIndexService _service;
-    private readonly ThumbnailSchedulerService _thumbScheduler; // global scheduler
 
     private double _baseItemSize = 200;
     private const double _minSize = 80;
     private const double _maxSize = 600;
-    public double MinItemWidth => _baseItemSize;
+
+    // Converted to DP so x:Bind DesiredColumnWidth updates when zoom changes (Method A)
+    public double MinItemWidth
+    {
+        get => (double)GetValue(MinItemWidthProperty);
+        set => SetValue(MinItemWidthProperty, value);
+    }
+    public static readonly DependencyProperty MinItemWidthProperty =
+        DependencyProperty.Register(nameof(MinItemWidth), typeof(double), typeof(GalleryPage), new PropertyMetadata(200.0, OnMinItemWidthChanged));
+    private static void OnMinItemWidthChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is GalleryPage p)
+        {
+            try { p.GalleryView?.InvalidateMeasure(); p.GalleryView?.InvalidateArrange(); } catch { }
+        }
+    }
 
     public double TileLineHeight
     {
@@ -84,7 +98,6 @@ public sealed partial class GalleryPage : Page
         NavigationCacheMode = NavigationCacheMode.Enabled;
 
         _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService ?? new ImageIndexService();
-        _thumbScheduler = ((App)Application.Current).Services.GetService(typeof(ThumbnailSchedulerService)) as ThumbnailSchedulerService ?? new ThumbnailSchedulerService(_service);
         if (Application.Current.Resources.TryGetValue("GlobalGalleryVM", out var existing) && existing is GalleryViewModel vm)
             ViewModel = vm;
         else
@@ -96,6 +109,7 @@ public sealed partial class GalleryPage : Page
         DataContext = ViewModel;
 
         TileLineHeight = _baseItemSize;
+        MinItemWidth = _baseItemSize; // initialize DP
 
         ViewModel.ImagesChanged += OnImagesChanged;
         Loaded += GalleryPage_Loaded;
@@ -120,8 +134,11 @@ public sealed partial class GalleryPage : Page
             var tb = GetTopBar(); if (tb != null) ResetSubtreeOpacity(tb);
             EnqueueVisibleStrict();
             _ = ProcessQueueAsync();
+            // Resume pipeline immediately so blanks are filled without waiting for first scroll idle
             _service.SetApplySuspended(false);
             _service.FlushApplyQueue();
+            UpdateSchedulerViewport();
+            StartIdleFill();
             var cas = ConnectedAnimationService.GetForCurrentView();
             var back = cas.GetAnimation("BackConnectedAnimation");
             if (back != null && Application.Current.Resources.TryGetValue("BackPath", out var p) && p is string path && !string.IsNullOrWhiteSpace(path))
@@ -148,7 +165,7 @@ public sealed partial class GalleryPage : Page
         HookScroll();
         EnqueueVisibleStrict();
         _ = ProcessQueueAsync();
-        try { _service.SetApplySuspended(false); _service.FlushApplyQueue(); } catch { }
+        try { _service.SetApplySuspended(false); _service.FlushApplyQueue(); StartIdleFill(); UpdateSchedulerViewport(); } catch { }
     }
 
     private void GalleryPage_Unloaded(object sender, RoutedEventArgs e)

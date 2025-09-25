@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using NAIGallery.Models;
+using NAIGallery.Services;
 
 namespace NAIGallery.Views;
 
@@ -37,6 +38,8 @@ public sealed partial class GalleryPage
                 _scrollIdleCts = new CancellationTokenSource();
                 _idleFillCts?.Cancel();
                 EnqueueVisibleStrict();
+                // Keep viewport scheduling updated during active scroll so upward blanks fill sooner.
+                UpdateSchedulerViewport();
                 TryDrainVisibleDuringScroll();
             }
             else
@@ -84,35 +87,67 @@ public sealed partial class GalleryPage
         catch { }
     }
 
-    private void StartIdleFill()
+    private sealed class IdleUiSnapshot
     {
-        try { _idleFillCts?.Cancel(); } catch { }
-        _idleFillCts = new CancellationTokenSource();
-        var token = _idleFillCts.Token;
-        int passes = 0;
-        _ = Task.Run(async () =>
+        public int DesiredWidth = 256;
+        public List<ImageMetadata> MissingRealized = new();
+        public List<ImageMetadata> MissingVisible = new();
+        public List<ImageMetadata> BufferCandidates = new();
+        public bool HasImages;
+    }
+
+    private Task<IdleUiSnapshot?> CaptureIdleSnapshotAsync(CancellationToken token)
+    {
+        var tcs = new TaskCompletionSource<IdleUiSnapshot?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (DispatcherQueue == null)
         {
-            while (!token.IsCancellationRequested && passes < 5)
+            tcs.TrySetResult(null); return tcs.Task;
+        }
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (token.IsCancellationRequested) { tcs.TrySetResult(null); return; }
+            try
             {
-                bool any = false;
+                if (_scrollViewer == null || ViewModel.Images.Count == 0)
+                { tcs.TrySetResult(new IdleUiSnapshot{ HasImages = false }); return; }
+
+                var snap = new IdleUiSnapshot{ HasImages = true };
+                snap.DesiredWidth = GetDesiredDecodeWidth();
+
+                // Realized tiles
                 try
                 {
-                    if (_scrollViewer == null || ViewModel.Images.Count == 0) break;
-                    int desiredWidth = GetDesiredDecodeWidth();
-                    var missingVisible = new List<ImageMetadata>();
-                    for (int i = _viewStartIndex; i <= Math.Min(_viewEndIndex, ViewModel.Images.Count - 1); i++)
+                    var host = GetItemsHost();
+                    if (host != null && host.Children.Count > 0)
+                    {
+                        for (int c = 0; c < host.Children.Count; c++)
+                        {
+                            if (host.Children[c] is FrameworkElement fe && fe.DataContext is ImageMetadata meta)
+                            {
+                                int cur = meta.ThumbnailPixelWidth ?? 0;
+                                if (meta.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                                    snap.MissingRealized.Add(meta);
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                // Visible logical range
+                if (_viewStartIndex <= _viewEndIndex && _viewStartIndex >= 0 && _viewEndIndex < ViewModel.Images.Count)
+                {
+                    for (int i = _viewStartIndex; i <= _viewEndIndex && i < ViewModel.Images.Count; i++)
                     {
                         var m = ViewModel.Images[i];
                         int cur = m.ThumbnailPixelWidth ?? 0;
-                        if (m.Thumbnail == null || cur + 32 < desiredWidth)
-                            missingVisible.Add(m);
+                        if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                            snap.MissingVisible.Add(m);
                     }
-                    if (missingVisible.Count > 0)
-                    {
-                        _thumbScheduler.BoostVisible(missingVisible, desiredWidth);
-                        any = true;
-                    }
+                }
 
+                // Buffer prefetch indices (direction-biased)
+                try
+                {
                     double viewport = _scrollViewer.ViewportHeight;
                     double offset = _scrollViewer.VerticalOffset;
                     double bufferTopExtent = viewport * PrefetchBufferFactor * (_scrollingUp ? 2.0 : 1.0);
@@ -125,24 +160,78 @@ public sealed partial class GalleryPage
                     int bufEndRow = Math.Max(bufStartRow, (int)(bufferBottom / itemH));
                     int bufStartIndex = Math.Max(0, bufStartRow * cols);
                     int bufEndIndex = Math.Min((bufEndRow + 1) * cols - 1, ViewModel.Images.Count - 1);
-
                     for (int i = bufStartIndex; i <= bufEndIndex; i++)
                     {
                         if (i >= _viewStartIndex && i <= _viewEndIndex) continue;
                         var m = ViewModel.Images[i];
                         int cur = m.ThumbnailPixelWidth ?? 0;
-                        if (m.Thumbnail == null || cur + 32 < desiredWidth)
-                        {
-                            _thumbScheduler.Request(m, desiredWidth, highPriority: false);
-                            any = true;
-                        }
+                        if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                            snap.BufferCandidates.Add(m);
                     }
                 }
                 catch { }
 
-                if (!any) break;
-                passes++;
-                try { await Task.Delay(140, token); } catch { break; }
+                tcs.TrySetResult(snap);
+            }
+            catch { tcs.TrySetResult(null); }
+        });
+        return tcs.Task;
+    }
+
+    private void StartIdleFill()
+    {
+        try { _idleFillCts?.Cancel(); } catch { }
+        _idleFillCts = new CancellationTokenSource();
+        var token = _idleFillCts.Token;
+        int idleCyclesWithoutWork = 0;
+        _ = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                IdleUiSnapshot? snap = null;
+                try { snap = await CaptureIdleSnapshotAsync(token).ConfigureAwait(false); } catch { }
+                if (token.IsCancellationRequested) break;
+                if (snap == null || !snap.HasImages) { try { await Task.Delay(400, token); } catch { } continue; }
+
+                bool work = false;
+                int desiredWidth = snap.DesiredWidth;
+                try
+                {
+                    if (snap.MissingRealized.Count > 0)
+                    {
+                        (_service as ImageIndexService)?.BoostVisible(snap.MissingRealized, desiredWidth);
+                        work = true;
+                    }
+                    if (snap.MissingVisible.Count > 0)
+                    {
+                        (_service as ImageIndexService)?.BoostVisible(snap.MissingVisible, desiredWidth);
+                        work = true;
+                    }
+                    if (snap.BufferCandidates.Count > 0)
+                    {
+                        // Prefetch (normal priority)
+                        foreach (var m in snap.BufferCandidates)
+                            (_service as ImageIndexService)?.Schedule(m, desiredWidth, false);
+                        work = true;
+                    }
+                    if (work)
+                    {
+                        _service.SetApplySuspended(false);
+                        _service.FlushApplyQueue();
+                    }
+                }
+                catch { }
+
+                if (!work) idleCyclesWithoutWork++; else idleCyclesWithoutWork = 0;
+
+                int delay = idleCyclesWithoutWork switch
+                {
+                    < 2 => 140,
+                    < 5 => 250,
+                    < 15 => 500,
+                    _ => 1000
+                };
+                try { await Task.Delay(delay, token); } catch { break; }
             }
         }, token);
     }
@@ -191,11 +280,19 @@ public sealed partial class GalleryPage
             int startIndex = Math.Max(0, startRow * cols);
             int endIndex = Math.Min((endRow + 1) * cols - 1, ViewModel.Images.Count - 1);
             var orderedVisible = new List<ImageMetadata>(endIndex - startIndex + 1);
-            int mid = (startIndex + endIndex) / 2; int lo = mid; int hi = mid + 1;
-            while (lo >= startIndex || hi <= endIndex)
+            if (_scrollingUp)
             {
-                if (lo >= startIndex) { orderedVisible.Add(ViewModel.Images[lo]); lo--; }
-                if (hi <= endIndex) { orderedVisible.Add(ViewModel.Images[hi]); hi++; }
+                // When scrolling up, prioritize from top to bottom to fill blanks at top quickly.
+                for (int i = startIndex; i <= endIndex; i++) orderedVisible.Add(ViewModel.Images[i]);
+            }
+            else
+            {
+                int mid = (startIndex + endIndex) / 2; int lo = mid; int hi = mid + 1;
+                while (lo >= startIndex || hi <= endIndex)
+                {
+                    if (lo >= startIndex) { orderedVisible.Add(ViewModel.Images[lo]); lo--; }
+                    if (hi <= endIndex) { orderedVisible.Add(ViewModel.Images[hi]); hi++; }
+                }
             }
 
             double bufferTop = Math.Max(0, offset - bufferTopExtent);
@@ -212,7 +309,7 @@ public sealed partial class GalleryPage
             }
 
             int desiredWidth = GetDesiredDecodeWidth();
-            _thumbScheduler.UpdateViewport(orderedVisible, bufferList, desiredWidth);
+            (_service as ImageIndexService)?.UpdateViewport(orderedVisible, bufferList, desiredWidth);
         }
         catch { }
     }

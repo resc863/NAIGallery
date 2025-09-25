@@ -76,6 +76,6 @@ public sealed partial class GalleryPage
         _suppressImplicitDuringBack = false; _isBackAnimating = false;
         if (GalleryView != null) GalleryView.Opacity = 1.0;
         var tb = GetTopBar(); if (tb != null) tb.Opacity = 1.0;
-        try { _service.SetApplySuspended(false); _service.FlushApplyQueue(); } catch { }
+        try { _service.SetApplySuspended(false); _service.FlushApplyQueue(); EnqueueVisibleStrict(); UpdateSchedulerViewport(); StartIdleFill(); } catch { }
     }
 }

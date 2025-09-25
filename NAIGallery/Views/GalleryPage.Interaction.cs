@@ -16,6 +16,7 @@ public sealed partial class GalleryPage
     private void ApplyItemSize()
     {
         TileLineHeight = _baseItemSize;
+        MinItemWidth = _baseItemSize; // ensure columns resize
         try { GalleryView?.InvalidateMeasure(); GalleryView?.InvalidateArrange(); } catch { }
     }
 
