@@ -15,6 +15,7 @@ public sealed partial class GalleryPage
     private bool _scrollingUp = false; // direction flag
     private double _lastOffsetForDir = 0; // for direction detection
     private const double PrefetchBufferFactor = 1.5; // extra viewport heights to prefetch
+    private volatile int _idleBackfillCursor = 0; // progressive backfill pointer for remaining thumbnails
 
     private void HookScroll()
     {
@@ -93,6 +94,7 @@ public sealed partial class GalleryPage
         public List<ImageMetadata> MissingRealized = new();
         public List<ImageMetadata> MissingVisible = new();
         public List<ImageMetadata> BufferCandidates = new();
+        public List<ImageMetadata> RemainingOrdered = new(); // outside buffer, ordered by distance from viewport
         public bool HasImages;
     }
 
@@ -108,7 +110,9 @@ public sealed partial class GalleryPage
             if (token.IsCancellationRequested) { tcs.TrySetResult(null); return; }
             try
             {
-                if (_scrollViewer == null || ViewModel.Images.Count == 0)
+                var images = ViewModel.Images; // local snapshot reference
+                int imageCount = images.Count;
+                if (_scrollViewer == null || imageCount == 0)
                 { tcs.TrySetResult(new IdleUiSnapshot{ HasImages = false }); return; }
 
                 var snap = new IdleUiSnapshot{ HasImages = true };
@@ -133,12 +137,20 @@ public sealed partial class GalleryPage
                 }
                 catch { }
 
+                // Clamp view indices defensively
+                int viewStart = _viewStartIndex;
+                int viewEnd = _viewEndIndex;
+                if (viewStart < 0) viewStart = 0;
+                if (viewEnd >= imageCount) viewEnd = imageCount - 1;
+                if (viewEnd < viewStart) { viewStart = 0; viewEnd = -1; }
+
                 // Visible logical range
-                if (_viewStartIndex <= _viewEndIndex && _viewStartIndex >= 0 && _viewEndIndex < ViewModel.Images.Count)
+                if (viewStart <= viewEnd && viewStart >= 0 && viewEnd < imageCount)
                 {
-                    for (int i = _viewStartIndex; i <= _viewEndIndex && i < ViewModel.Images.Count; i++)
+                    for (int i = viewStart; i <= viewEnd; i++)
                     {
-                        var m = ViewModel.Images[i];
+                        if (i < 0 || i >= imageCount) break;
+                        var m = images[i];
                         int cur = m.ThumbnailPixelWidth ?? 0;
                         if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
                             snap.MissingVisible.Add(m);
@@ -146,6 +158,7 @@ public sealed partial class GalleryPage
                 }
 
                 // Buffer prefetch indices (direction-biased)
+                int bufStartIndex = 0, bufEndIndex = -1; // capture for remaining ordering
                 try
                 {
                     double viewport = _scrollViewer.ViewportHeight;
@@ -158,15 +171,59 @@ public sealed partial class GalleryPage
                     double itemH = _baseItemSize;
                     int bufStartRow = Math.Max(0, (int)(bufferTop / itemH));
                     int bufEndRow = Math.Max(bufStartRow, (int)(bufferBottom / itemH));
-                    int bufStartIndex = Math.Max(0, bufStartRow * cols);
-                    int bufEndIndex = Math.Min((bufEndRow + 1) * cols - 1, ViewModel.Images.Count - 1);
-                    for (int i = bufStartIndex; i <= bufEndIndex; i++)
+                    bufStartIndex = Math.Max(0, bufStartRow * cols);
+                    bufEndIndex = Math.Min((bufEndRow + 1) * cols - 1, imageCount - 1);
+                    if (bufStartIndex < imageCount && bufEndIndex >= 0)
                     {
-                        if (i >= _viewStartIndex && i <= _viewEndIndex) continue;
-                        var m = ViewModel.Images[i];
-                        int cur = m.ThumbnailPixelWidth ?? 0;
-                        if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
-                            snap.BufferCandidates.Add(m);
+                        for (int i = bufStartIndex; i <= bufEndIndex; i++)
+                        {
+                            if (i >= imageCount) break;
+                            if (i >= viewStart && i <= viewEnd) continue;
+                            if (i < 0) continue;
+                            var m = images[i];
+                            int cur = m.ThumbnailPixelWidth ?? 0;
+                            if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                                snap.BufferCandidates.Add(m);
+                        }
+                    }
+                }
+                catch { }
+
+                // Remaining outside buffer (progressive backfill radiating outwards from viewport)
+                try
+                {
+                    int total = imageCount;
+                    if (total > 0 && viewEnd >= viewStart && viewStart >= 0)
+                    {
+                        int left = viewStart - 1;
+                        int right = viewEnd + 1;
+                        while (left >= 0 || right < total)
+                        {
+                            bool addedAny = false;
+                            if (left >= 0 && (left < bufStartIndex || left > bufEndIndex))
+                            {
+                                if (left < total)
+                                {
+                                    var m = images[left];
+                                    int cur = m.ThumbnailPixelWidth ?? 0;
+                                    if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                                        snap.RemainingOrdered.Add(m);
+                                }
+                                left--; addedAny = true;
+                            }
+                            if (right < total && (right < bufStartIndex || right > bufEndIndex))
+                            {
+                                if (right >= 0)
+                                {
+                                    var m = images[right];
+                                    int cur = m.ThumbnailPixelWidth ?? 0;
+                                    if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                                        snap.RemainingOrdered.Add(m);
+                                }
+                                right++; addedAny = true;
+                            }
+                            if (!addedAny) break;
+                        }
                     }
                 }
                 catch { }
@@ -209,10 +266,25 @@ public sealed partial class GalleryPage
                     }
                     if (snap.BufferCandidates.Count > 0)
                     {
-                        // Prefetch (normal priority)
                         foreach (var m in snap.BufferCandidates)
                             (_service as ImageIndexService)?.Schedule(m, desiredWidth, false);
                         work = true;
+                    }
+                    // Progressive backfill: schedule remaining (chunked) so eventually everything gets a thumbnail
+                    if (!work && snap.RemainingOrdered.Count > 0)
+                    {
+                        int cursor = _idleBackfillCursor;
+                        if (cursor < snap.RemainingOrdered.Count)
+                        {
+                            int batch = Math.Min(48, snap.RemainingOrdered.Count - cursor);
+                            for (int i = 0; i < batch; i++)
+                            {
+                                var m = snap.RemainingOrdered[cursor + i];
+                                (_service as ImageIndexService)?.Schedule(m, desiredWidth, false);
+                            }
+                            _idleBackfillCursor = cursor + batch;
+                            work = true;
+                        }
                     }
                     if (work)
                     {
@@ -318,6 +390,8 @@ public sealed partial class GalleryPage
 
             int desiredWidth = GetDesiredDecodeWidth();
             (_service as ImageIndexService)?.UpdateViewport(orderedVisible, bufferList, desiredWidth);
+            // Reset backfill cursor when viewport changes significantly
+            _idleBackfillCursor = 0;
         }
         catch { }
     }
