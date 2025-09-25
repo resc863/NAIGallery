@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "NAIGallery (Package)": {
+      "commandName": "MsixPackage",
+      "nativeDebugging": false
+    },
+    "NAIGallery (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

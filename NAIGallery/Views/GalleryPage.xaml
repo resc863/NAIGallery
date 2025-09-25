@@ -1,0 +1,83 @@
+<Page
+    x:Class="NAIGallery.Views.GalleryPage"
+    x:Name="PageRoot"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:NAIGallery.Models"
+    xmlns:vm="using:NAIGallery.ViewModels"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:controls="using:NAIGallery.Controls"
+    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    <Grid RowDefinitions="Auto,*" ColumnDefinitions="*" KeyDown="Root_KeyDown" KeyUp="Root_KeyUp" PointerWheelChanged="Root_PointerWheelChanged">
+        <!-- Top bar with centered search -->
+        <Grid x:Name="TopBar" Grid.Row="0" Margin="8" ColumnDefinitions="Auto,*" VerticalAlignment="Top">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Button Content="폴더 열기" Click="OpenFolder_Click" />
+                <ComboBox x:Name="SortFieldCombo" Width="120" SelectionChanged="SortFieldCombo_SelectionChanged">
+                    <ComboBoxItem Content="이름" Tag="Name" />
+                    <ComboBoxItem Content="날짜" Tag="Date" />
+                </ComboBox>
+                <ToggleButton Width="40" Click="SortDirectionToggle_Click">
+                    <TextBlock x:Name="SortDirText" Text="↑" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </ToggleButton>
+                <ProgressRing IsActive="{Binding IsIndexing}" Width="28" Height="28" />
+            </StackPanel>
+            <TextBox Grid.Column="1" Width="500" HorizontalAlignment="Center" PlaceholderText="태그 검색" Text="{Binding SearchQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+        </Grid>
+
+        <!-- ScrollViewer hosting ItemsRepeater using toolkit StaggeredLayout (masonry) -->
+        <ScrollViewer x:Name="RepeaterScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+            <muxc:ItemsRepeater x:Name="GalleryView" ItemsSource="{Binding Images}">
+                <muxc:ItemsRepeater.Layout>
+                    <toolkit:StaggeredLayout DesiredColumnWidth="{x:Bind MinItemWidth, Mode=OneWay}" />
+                </muxc:ItemsRepeater.Layout>
+                <muxc:ItemsRepeater.ItemTemplate>
+                    <DataTemplate x:DataType="models:ImageMetadata">
+                        <controls:AspectPresenter
+                            Width="{Binding ElementName=PageRoot, Path=TileLineHeight}"
+                            AspectRatio="{x:Bind AspectRatio, Mode=OneWay}">
+                            <Border x:Name="TileBorder"
+                                    Tag="{x:Bind FilePath}"
+                                    Margin="4"
+                                    BorderBrush="Gray"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Background="Transparent"
+                                    Tapped="Item_Tapped">
+                                <Grid Background="Transparent">
+                                    <Image x:Name="connectedElement"
+                                           Tag="{x:Bind FilePath}"
+                                           Source="{x:Bind Thumbnail, Mode=OneWay}"
+                                           Stretch="UniformToFill"
+                                           HorizontalAlignment="Stretch"
+                                           VerticalAlignment="Stretch"
+                                           ImageOpened="Tile_ImageOpened" />
+
+                                    <Border Background="#80000000"
+                                            VerticalAlignment="Bottom"
+                                            Padding="4"
+                                            CornerRadius="0,0,4,4"
+                                            IsHitTestVisible="False">
+                                        <TextBlock Text="{x:Bind Prompt, Mode=OneWay}"
+                                                   Foreground="White"
+                                                   FontSize="12"
+                                                   MaxLines="2"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </Border>
+
+                                    <TextBlock x:Name="LoadingText"
+                                               Text="로딩"
+                                               Foreground="Gray"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToVisibilityConverter}}"
+                                               IsHitTestVisible="False" />
+                                </Grid>
+                            </Border>
+                        </controls:AspectPresenter>
+                    </DataTemplate>
+                </muxc:ItemsRepeater.ItemTemplate>
+            </muxc:ItemsRepeater>
+        </ScrollViewer>
+    </Grid>
+</Page>
