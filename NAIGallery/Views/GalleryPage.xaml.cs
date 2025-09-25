@@ -9,10 +9,8 @@ using WinRT.Interop;
 using System;
 using Windows.System;
 using System.Linq;
-using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Diagnostics;
 using Microsoft.UI.Xaml.Navigation;
@@ -25,7 +23,8 @@ namespace NAIGallery.Views;
 public sealed partial class GalleryPage : Page
 {
     public GalleryViewModel ViewModel { get; }
-    private readonly ImageIndexService _service;
+    private readonly IImageIndexService _service;
+    private readonly ThumbnailSchedulerService _thumbScheduler; // global scheduler
 
     private double _baseItemSize = 200;
     private const double _minSize = 80;
@@ -41,14 +40,6 @@ public sealed partial class GalleryPage : Page
         DependencyProperty.Register(nameof(TileLineHeight), typeof(double), typeof(GalleryPage), new PropertyMetadata(200.0));
 
     private bool _isLoaded = false;
-
-    // Thumbnail / queue fields
-    private readonly ConcurrentQueue<(ImageMetadata Meta, int Width)> _thumbQueue = new();
-    private readonly ConcurrentQueue<(ImageMetadata Meta, int Width)> _thumbHighQueue = new();
-    private readonly SemaphoreSlim _queueRunnerGate = new(1,1);
-    private readonly SemaphoreSlim _sequentialGate = new(ComputeDecodeParallelism(), ComputeDecodeParallelism());
-    private CancellationTokenSource _thumbCts = new();
-    private readonly ConcurrentDictionary<string, byte> _queued = new(StringComparer.OrdinalIgnoreCase);
 
     // Viewport tracking
     private volatile int _viewStartIndex = 0;
@@ -92,7 +83,8 @@ public sealed partial class GalleryPage : Page
         InitializeComponent();
         NavigationCacheMode = NavigationCacheMode.Enabled;
 
-        _service = ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as ImageIndexService ?? new ImageIndexService();
+        _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService ?? new ImageIndexService();
+        _thumbScheduler = ((App)Application.Current).Services.GetService(typeof(ThumbnailSchedulerService)) as ThumbnailSchedulerService ?? new ThumbnailSchedulerService(_service);
         if (Application.Current.Resources.TryGetValue("GlobalGalleryVM", out var existing) && existing is GalleryViewModel vm)
             ViewModel = vm;
         else
@@ -151,7 +143,6 @@ public sealed partial class GalleryPage : Page
     private void GalleryPage_Loaded(object? sender, RoutedEventArgs e)
     {
         _isLoaded = true;
-        if (_thumbCts.IsCancellationRequested) _thumbCts = new CancellationTokenSource();
         ApplyItemSize();
         InitComposition();
         HookScroll();
@@ -163,7 +154,6 @@ public sealed partial class GalleryPage : Page
     private void GalleryPage_Unloaded(object sender, RoutedEventArgs e)
     {
         _isLoaded = false;
-        try { _thumbCts.Cancel(); } catch { }
         try { _preloadCts?.Cancel(); } catch { }
         try { _idleFillCts?.Cancel(); } catch { }
         try { _service.SetApplySuspended(true); } catch { }

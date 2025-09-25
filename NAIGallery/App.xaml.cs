@@ -5,6 +5,7 @@ using NAIGallery.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Windows.Storage; // for ApplicationData
 using Microsoft.UI.Dispatching; // DispatcherQueue
+using Microsoft.Extensions.Logging;
 
 namespace NAIGallery
 {
@@ -23,13 +24,23 @@ namespace NAIGallery
         {
             InitializeComponent();
             var services = new ServiceCollection();
-            services.AddSingleton<ImageIndexService>();
+            services.AddLogging(builder =>
+            {
+#if DEBUG
+                builder.SetMinimumLevel(LogLevel.Debug);
+#else
+                builder.SetMinimumLevel(LogLevel.Information);
+#endif
+                builder.AddDebug();
+            });
+            services.AddSingleton<IImageIndexService, ImageIndexService>();
+            services.AddSingleton<ThumbnailSchedulerService>(); // depends on IImageIndexService
             Services = services.BuildServiceProvider();
 
             // Apply persisted user settings to services when available
             try
             {
-                if (Services.GetService(typeof(ImageIndexService)) is ImageIndexService svc)
+                if (Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
                 {
                     var local = ApplicationData.Current.LocalSettings;
                     if (local.Values.TryGetValue("ThumbCacheCapacity", out object? val) && val != null)
@@ -45,7 +56,7 @@ namespace NAIGallery
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
         {
             _window = new MainWindow();
-            if (Services.GetService(typeof(ImageIndexService)) is ImageIndexService svc)
+            if (Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
             {
                 try
                 {
