@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.UI.Xaml.Media.Animation; // ensure animation types
 
 namespace NAIGallery.Views;
 
@@ -61,6 +62,118 @@ public sealed partial class GalleryPage
         catch { }
     }
 
+    private UIElement? _hoverScaledTile; // track current hover tile to keep scale when clicking for CA
+    private const double HoverScale = 1.06; // subtle emphasis
+    private const int HoverAnimMs = 120;
+    private bool _navigatingViaTap = false; // suppress hover restore during navigation
+
+    // Called after navigation back (hooked in OnNavigatedTo in another partial)
+    private void ResetHoverNavigationState()
+    {
+        _navigatingViaTap = false;
+        _hoverScaledTile = null;
+        TryResetAllTileScales();
+    }
+
+    private void TryResetAllTileScales()
+    {
+        try
+        {
+            if (GalleryView == null) return;
+            var q = new Queue<DependencyObject>();
+            q.Enqueue(GalleryView);
+            int inspected = 0;
+            while (q.Count > 0 && inspected < 2000) // safety cap
+            {
+                inspected++;
+                var d = q.Dequeue();
+                if (d is FrameworkElement fe)
+                {
+                    if (fe is Image img && img.Name == "connectedElement" && img.RenderTransform is ScaleTransform st)
+                    {
+                        if (st.ScaleX != 1.0 || st.ScaleY != 1.0)
+                        {
+                            st.ScaleX = st.ScaleY = 1.0;
+                        }
+                    }
+                }
+                int n = VisualTreeHelper.GetChildrenCount(d);
+                for (int i = 0; i < n; i++) q.Enqueue(VisualTreeHelper.GetChild(d, i));
+            }
+        }
+        catch { }
+    }
+
+    private void Tile_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        try
+        {
+            if (_navigatingViaTap) return;
+            if (sender is not FrameworkElement fe) return;
+            var img = fe.FindName("connectedElement") as Image;
+            if (img?.RenderTransform is ScaleTransform st)
+            {
+                // If already scaled (from previous hover), skip
+                if (Math.Abs(st.ScaleX - HoverScale) < 0.01) return;
+                _hoverScaledTile = fe; // remember container, used when tapped to start CA from scaled state
+                AnimateScale(st, st.ScaleX, HoverScale, HoverAnimMs);
+            }
+        }
+        catch { }
+    }
+
+    private void Tile_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        try
+        {
+            if (_navigatingViaTap) return; // keep scale until nav completes
+            if (sender is not FrameworkElement fe) return;
+            // If leaving the tile that is not currently being pressed/tapped, restore
+            if (_hoverScaledTile == fe)
+            {
+                var img = fe.FindName("connectedElement") as Image;
+                if (img?.RenderTransform is ScaleTransform st)
+                {
+                    AnimateScale(st, st.ScaleX, 1.0, HoverAnimMs);
+                }
+                _hoverScaledTile = null;
+            }
+        }
+        catch { }
+    }
+
+    private void AnimateScale(ScaleTransform st, double from, double to, int durationMs)
+    {
+        try
+        {
+            // Simple imperative animation (avoid storyboard allocation churn) using Composition where possible
+            var element = st as DependencyObject;
+            // Fallback to storyboard (lightweight for single double)
+            var animX = new DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = new Duration(TimeSpan.FromMilliseconds(durationMs)),
+                EnableDependentAnimation = true
+            };
+            var animY = new DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = new Duration(TimeSpan.FromMilliseconds(durationMs)),
+                EnableDependentAnimation = true
+            };
+            var sb = new Storyboard();
+            Storyboard.SetTarget(animX, st); Storyboard.SetTargetProperty(animX, "ScaleX");
+            Storyboard.SetTarget(animY, st); Storyboard.SetTargetProperty(animY, "ScaleY");
+            sb.Children.Add(animX); sb.Children.Add(animY); sb.Begin();
+        }
+        catch
+        {
+            st.ScaleX = st.ScaleY = to;
+        }
+    }
+
     private void Item_Tapped(object sender, TappedRoutedEventArgs e)
     {
         var now = DateTime.UtcNow;
@@ -68,7 +181,25 @@ public sealed partial class GalleryPage
         if ((now - _lastTapAt).TotalMilliseconds < 150) { e.Handled = true; return; }
         _lastTapAt = now;
         if (!TryResolveTap(sender, e, out var itemRoot, out var meta, out var path) || string.IsNullOrEmpty(path)) return;
-        e.Handled = true; TryNavigateWithCA(itemRoot!, path!);
+        e.Handled = true;
+
+        // Ensure the connected element remains at hover scale during CA capture
+        try
+        {
+            if (itemRoot != null)
+            {
+                var img = itemRoot.FindName("connectedElement") as Image;
+                if (img?.RenderTransform is ScaleTransform st)
+                {
+                    // Keep current scale (likely HoverScale); CA will snapshot this visual
+                    st.ScaleX = st.ScaleY = HoverScale; // enforce final to avoid mid-animation capture
+                }
+            }
+        }
+        catch { }
+
+        _navigatingViaTap = true; // prevent hover shrink
+        TryNavigateWithCA(itemRoot!, path!);
     }
 
     private void Tile_ImageOpened(object sender, RoutedEventArgs e)

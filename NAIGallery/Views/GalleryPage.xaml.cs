@@ -129,6 +129,12 @@ public sealed partial class GalleryPage : Page
         base.OnNavigatedTo(e);
         try
         {
+            // Reset hover/navigation transient state so tile hover scale works again after returning from detail
+            ResetHoverNavigationState();
+        }
+        catch { }
+        try
+        {
             _isForwardFading = false;
             if (GalleryView != null) ResetSubtreeOpacity(GalleryView);
             var tb = GetTopBar(); if (tb != null) ResetSubtreeOpacity(tb);

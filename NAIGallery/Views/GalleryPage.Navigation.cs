@@ -12,11 +12,11 @@ public sealed partial class GalleryPage
     private async Task TryStartBackCAAsync(string path, ConnectedAnimation back)
     {
         if (GalleryView == null) return;
-        HideGridForBackCA();
+        // No longer hide grid; we only run CA if possible
         int index = -1;
         try { for (int i = 0; i < ViewModel.Images.Count; i++) if (string.Equals(ViewModel.Images[i].FilePath, path, StringComparison.OrdinalIgnoreCase)) { index = i; break; } }
         catch { }
-        if (index < 0) { ShowGridAfterBackCA(); return; }
+        if (index < 0) { return; }
         try
         {
             double colWidth = _baseItemSize;
@@ -30,9 +30,8 @@ public sealed partial class GalleryPage
         if (target != null)
         {
             try { back.Configuration = new DirectConnectedAnimationConfiguration(); back.TryStart(target); } catch { }
-            _pendingBackPath = null; ShowGridAfterBackCA(); return;
+            _pendingBackPath = null; return;
         }
-        ShowGridAfterBackCA();
     }
 
     private void TryNavigateWithCA(FrameworkElement fe, string path)
@@ -46,7 +45,7 @@ public sealed partial class GalleryPage
             Application.Current.Resources["ForwardCAStarted"] = false;
         }
         catch { }
-        StartForwardFadeOutExcluding(source);
+        StartForwardFadeOutExcluding(source); // now noop (fade disabled)
         _ = DispatcherQueue.TryEnqueue(() => Frame.Navigate(typeof(ImageDetailPage), path, new SuppressNavigationTransitionInfo()));
     }
 
@@ -63,19 +62,7 @@ public sealed partial class GalleryPage
         return null;
     }
 
-    private void HideGridForBackCA()
-    {
-        if (_isBackAnimating) return; _isBackAnimating = true; _suppressImplicitDuringBack = true;
-        try { _service.SetApplySuspended(true); } catch { }
-        if (GalleryView != null) GalleryView.Opacity = 0;
-        var tb = GetTopBar(); if (tb != null) tb.Opacity = 0;
-    }
-
-    private void ShowGridAfterBackCA()
-    {
-        _suppressImplicitDuringBack = false; _isBackAnimating = false;
-        if (GalleryView != null) GalleryView.Opacity = 1.0;
-        var tb = GetTopBar(); if (tb != null) tb.Opacity = 1.0;
-        try { _service.SetApplySuspended(false); _service.FlushApplyQueue(); EnqueueVisibleStrict(); UpdateSchedulerViewport(); StartIdleFill(); } catch { }
-    }
+    // Legacy methods kept for compatibility but now no-op
+    private void HideGridForBackCA() { }
+    private void ShowGridAfterBackCA() { }
 }

@@ -29,28 +29,25 @@ public sealed partial class GalleryPage
         catch { }
     }
 
-    private void StartForwardFadeOutExcluding(UIElement? exclude)
+    private void StartForwardFadeOutExcluding(UIElement? source)
     {
+        // New minimal implementation: fade ONLY the source tile out quickly to avoid double-visual flash
         if (_isForwardFading) return; _isForwardFading = true;
         try
         {
+            if (source == null) return;
             _compositor ??= ElementCompositionPreview.GetElementVisual(this).Compositor;
-            if (_compositor == null) return;
-            var easing = _compositor.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0f), new Vector2(0f, 1f));
-            void Fade(UIElement? el, float to)
+            if (_compositor == null)
             {
-                try
-                {
-                    if (el == null || ReferenceEquals(el, exclude)) return;
-                    var v = ElementCompositionPreview.GetElementVisual(el);
-                    var anim = _compositor.CreateScalarKeyFrameAnimation();
-                    anim.Target = "Opacity"; anim.Duration = TimeSpan.FromMilliseconds(180); anim.InsertKeyFrame(1f, to, easing);
-                    v.StartAnimation("Opacity", anim); el.Opacity = to;
-                }
-                catch { }
+                source.Opacity = 0; return;
             }
-            Fade(GetTopBar(), 0f);
-            if (GalleryView != null) Fade(GalleryView, 0.2f);
+            var visual = ElementCompositionPreview.GetElementVisual(source);
+            var anim = _compositor.CreateScalarKeyFrameAnimation();
+            anim.Duration = TimeSpan.FromMilliseconds(70);
+            anim.InsertKeyFrame(1f, 0f, _compositor.CreateLinearEasingFunction());
+            anim.Target = "Opacity";
+            visual.StartAnimation("Opacity", anim);
+            source.Opacity = 0; // ensure final state
         }
         catch { }
     }

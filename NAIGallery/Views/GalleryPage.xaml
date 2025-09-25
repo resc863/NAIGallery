@@ -43,7 +43,9 @@
                                     BorderThickness="1"
                                     CornerRadius="4"
                                     Background="Transparent"
-                                    Tapped="Item_Tapped">
+                                    Tapped="Item_Tapped"
+                                    PointerEntered="Tile_PointerEntered"
+                                    PointerExited="Tile_PointerExited">
                                 <Grid Background="Transparent">
                                     <Image x:Name="connectedElement"
                                            Tag="{x:Bind FilePath}"
@@ -51,7 +53,12 @@
                                            Stretch="UniformToFill"
                                            HorizontalAlignment="Stretch"
                                            VerticalAlignment="Stretch"
-                                           ImageOpened="Tile_ImageOpened" />
+                                           ImageOpened="Tile_ImageOpened"
+                                           RenderTransformOrigin="0.5,0.5">
+                                        <Image.RenderTransform>
+                                            <ScaleTransform ScaleX="1" ScaleY="1" />
+                                        </Image.RenderTransform>
+                                    </Image>
 
                                     <Border Background="#80000000"
                                             VerticalAlignment="Bottom"

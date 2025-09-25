@@ -279,7 +279,15 @@ public sealed partial class GalleryPage
 
             int startIndex = Math.Max(0, startRow * cols);
             int endIndex = Math.Min((endRow + 1) * cols - 1, ViewModel.Images.Count - 1);
-            var orderedVisible = new List<ImageMetadata>(endIndex - startIndex + 1);
+
+            // Guard: if math overshoots (e.g. offset near extent end) startIndex can exceed endIndex -> negative capacity
+            if (startIndex >= ViewModel.Images.Count || endIndex < startIndex)
+            {
+                return; // nothing visible / safe early exit
+            }
+
+            int visibleCount = endIndex - startIndex + 1;
+            var orderedVisible = new List<ImageMetadata>(visibleCount);
             if (_scrollingUp)
             {
                 // When scrolling up, prioritize from top to bottom to fill blanks at top quickly.
