@@ -45,7 +45,6 @@ public sealed partial class GalleryPage
             }
             else
             {
-                ResetQueueForScroll();
                 EnqueueVisibleStrict();
                 UpdateSchedulerViewport();
             }
@@ -94,7 +93,7 @@ public sealed partial class GalleryPage
         public List<ImageMetadata> MissingRealized = new();
         public List<ImageMetadata> MissingVisible = new();
         public List<ImageMetadata> BufferCandidates = new();
-        public List<ImageMetadata> RemainingOrdered = new(); // outside buffer, ordered by distance from viewport
+        public List<ImageMetadata> RemainingOrdered = new();
         public bool HasImages;
     }
 
@@ -113,10 +112,9 @@ public sealed partial class GalleryPage
                 var images = ViewModel.Images; // local snapshot reference
                 int imageCount = images.Count;
                 if (_scrollViewer == null || imageCount == 0)
-                { tcs.TrySetResult(new IdleUiSnapshot{ HasImages = false }); return; }
+                { tcs.TrySetResult(new IdleUiSnapshot { HasImages = false }); return; }
 
-                var snap = new IdleUiSnapshot{ HasImages = true };
-                snap.DesiredWidth = GetDesiredDecodeWidth();
+                var snap = new IdleUiSnapshot { HasImages = true, DesiredWidth = GetDesiredDecodeWidth() };
 
                 // Realized tiles
                 try
@@ -307,8 +305,6 @@ public sealed partial class GalleryPage
             }
         }, token);
     }
-
-    private void ResetQueueForScroll() { }
 
     private void RequestReflow(int delayMs = 80)
     {

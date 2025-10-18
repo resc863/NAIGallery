@@ -92,6 +92,7 @@ public sealed partial class ImageDetailPage : Page
         try { if (TopBar != null) TopBar.Opacity = 0; } catch { }
         try { if (MetaScroll != null) MetaScroll.Opacity = 0; } catch { }
         try { if (SplitterBorder != null) SplitterBorder.Opacity = 0; } catch { }
+        try { if (DetailImage != null) DetailImage.Opacity = 0; } catch { } // 이미지 숨김
 
         // If navigation parameter was deferred, load now
         if (_pendingPath != null) { var p = _pendingPath; _pendingPath = null; LoadImage(p); }
@@ -167,17 +168,22 @@ public sealed partial class ImageDetailPage : Page
             _savedHostClip = ImageHost?.Clip as RectangleGeometry;
             if (ImageHost != null) ImageHost.Clip = null;
 
-            forward.Configuration = new DirectConnectedAnimationConfiguration();
+            forward.Configuration = new GravityConnectedAnimationConfiguration(); // Gravity 사용
 
             var coordinated = new List<UIElement>();
             if (TopBar != null) coordinated.Add(TopBar);
             if (SplitterBorder != null) coordinated.Add(SplitterBorder);
             if (MetaScroll != null) coordinated.Add(MetaScroll);
-            foreach (var el in coordinated) { try { el.Opacity = 0; } catch { } }
+            foreach (var el in coordinated) { try { el.Opacity = 0.1; } catch { } } // 낮은 opacity로 시작
 
             bool started = coordinated.Count > 0 ? forward.TryStart(DetailImage, coordinated) : forward.TryStart(DetailImage);
             try { Application.Current.Resources["ForwardCAStarted"] = started; } catch { }
             System.Diagnostics.Debug.WriteLine($"[Detail][CA] started={started}");
+
+            if (started)
+            {
+                try { if (DetailImage != null) DetailImage.Opacity = 1; } catch { } // CA 시작 시 이미지 표시
+            }
 
             forward.Completed += (s, _) =>
             {
@@ -207,22 +213,23 @@ public sealed partial class ImageDetailPage : Page
 
     private void FadeInAllUI()
     {
-        try { FadeInElement(TopBar); } catch { if (TopBar != null) TopBar.Opacity = 1; }
-        try { FadeInElement(MetaScroll); } catch { if (MetaScroll != null) MetaScroll.Opacity = 1; }
-        try { FadeInElement(SplitterBorder); } catch { if (SplitterBorder != null) SplitterBorder.Opacity = 1; }
+        try { FadeInElement(TopBar, 200); } catch { if (TopBar != null) TopBar.Opacity = 1; }
+        try { FadeInElement(MetaScroll, 200); } catch { if (MetaScroll != null) MetaScroll.Opacity = 1; }
+        try { FadeInElement(SplitterBorder, 200); } catch { if (SplitterBorder != null) SplitterBorder.Opacity = 1; }
     }
 
-    private void FadeInElement(UIElement? el, double durationMs = 120)
+    private void FadeInElement(UIElement? el, double durationMs = 200)
     {
         if (el == null) return;
         try
         {
             if (el.Opacity >= 0.99) return;
-            el.Opacity = 0;
+            el.Opacity = 0.1; // 낮은 시작 opacity
             var anim = new DoubleAnimation
             {
                 To = 1.0,
                 Duration = new Duration(TimeSpan.FromMilliseconds(durationMs)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }, // Easing 추가
                 EnableDependentAnimation = true
             };
             var sb = new Storyboard();

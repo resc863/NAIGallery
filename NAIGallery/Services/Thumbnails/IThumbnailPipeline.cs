@@ -20,8 +20,6 @@ internal interface IThumbnailPipeline
     void DrainVisible(HashSet<ImageMetadata> visible);
     void ClearCache();
     int CacheCapacity { get; set; }
-    long CacheHitCount { get; }
-    long CacheMissCount { get; }
 
     // New scheduling APIs (integrated former ThumbnailSchedulerService logic)
     void Schedule(ImageMetadata meta, int width, bool highPriority = false);

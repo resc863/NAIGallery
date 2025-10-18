@@ -42,10 +42,12 @@ public sealed partial class GalleryPage
         {
             var cas = ConnectedAnimationService.GetForCurrentView();
             cas.PrepareToAnimate("ForwardConnectedAnimation", source);
+            // Configuration을 Gravity로 변경 (더 자연스러운 곡선)
+            var anim = cas.GetAnimation("ForwardConnectedAnimation");
+            if (anim != null) anim.Configuration = new GravityConnectedAnimationConfiguration();
             Application.Current.Resources["ForwardCAStarted"] = false;
         }
         catch { }
-        StartForwardFadeOutExcluding(source); // now noop (fade disabled)
         _ = DispatcherQueue.TryEnqueue(() => Frame.Navigate(typeof(ImageDetailPage), path, new SuppressNavigationTransitionInfo()));
     }
 

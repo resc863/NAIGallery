@@ -44,7 +44,7 @@ public sealed partial class GalleryPage
         AdjustScrollForZoom(oldSize, newSize, e);
         _baseItemSize = newSize; e.Handled = true;
         SuppressImplicitBriefly(280);
-        CancelPreloading(); ResetQueueForScroll(); EnqueueVisibleStrict();
+        CancelPreloading(); EnqueueVisibleStrict();
         try { await _service.PreloadThumbnailsAsync(ViewModel.Images.Skip(_viewStartIndex).Take(Math.Max(1, _viewEndIndex - _viewStartIndex + 1)), GetDesiredDecodeWidth(), _preloadCts!.Token); } catch { }
         EnqueueVisibleStrict(); _ = ProcessQueueAsync();
         var debounceCts = new CancellationTokenSource(); var ct = debounceCts.Token;

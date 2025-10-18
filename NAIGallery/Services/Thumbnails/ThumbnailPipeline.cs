@@ -26,13 +26,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private readonly Dictionary<string, LruNode> _cacheMap = new(StringComparer.Ordinal);
     private LruNode? _head; private LruNode? _tail; private long _currentBytes; private long _byteCapacity; private readonly object _cacheLock = new();
 
-    private long _hit, _miss;
-    public long CacheHitCount => Interlocked.Read(ref _hit);
-    public long CacheMissCount => Interlocked.Read(ref _miss);
-
     // Error / stats
     private long _ioErrors, _formatErrors, _canceled, _unknownErrors;
-    private long _totalDecodes; private double _avgDecodeMs; // moving average
 
     private readonly ConcurrentDictionary<string, byte> _inflight = new();
     private readonly SemaphoreSlim _decodeGate = new(Math.Clamp(Environment.ProcessorCount/2,1,4));
@@ -233,14 +228,6 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         finally
         {
             sw.Stop();
-            double ms = sw.Elapsed.TotalMilliseconds;
-            double prevAvg, newAvg;
-            do
-            {
-                prevAvg = _avgDecodeMs;
-                newAvg = prevAvg <= 0 ? ms : (prevAvg * 0.9) + ms * 0.1;
-            } while (Math.Abs(Interlocked.CompareExchange(ref _avgDecodeMs, newAvg, prevAvg) - prevAvg) > double.Epsilon);
-            Interlocked.Increment(ref _totalDecodes);
             _inflight.TryRemove(key,out _);
         }
     }
@@ -315,17 +302,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         { double ar = Math.Clamp(wb.PixelWidth / (double)Math.Max(1, wb.PixelHeight), 0.1, 10.0); if(Math.Abs(ar - meta.AspectRatio) > 0.001) meta.AspectRatio = ar; }
     }
 
-    private string MakeCacheKey(string file, long ticks, int width)
+    private string MakeCacheKey(String file, long ticks, int width)
     { var ts=ticks.ToString(); var ws=width.ToString(); return string.Create(file.Length+1+ts.Length+2+ws.Length,(file,ts,ws),(dst,s)=>{ s.file.AsSpan().CopyTo(dst); int p=s.file.Length; dst[p++]='|'; s.ts.AsSpan().CopyTo(dst[p..]); p+=s.ts.Length; dst[p++]='|'; dst[p++]='w'; s.ws.AsSpan().CopyTo(dst[p..]); }); }
 
     private bool TryGetEntry(string key, out PixelEntry? entry)
-    { lock(_cacheLock){ if(_cacheMap.TryGetValue(key,out var node)){ MoveToHead_NoLock(node); Interlocked.Increment(ref _hit); entry = node.Entry; return true;} } Interlocked.Increment(ref _miss); entry=null; return false; }
+    { lock(_cacheLock){ if(_cacheMap.TryGetValue(key,out var node)){ MoveToHead_NoLock(node); entry = node.Entry; return true;} } entry=null; return false; }
 
     private void AddEntry(string key, PixelEntry entry)
-    { lock(_cacheLock){ if(_cacheMap.TryGetValue(key,out var existing)){ _currentBytes -= existing.Entry.Rented; ArrayPool<byte>.Shared.Return(existing.Entry.Pixels); existing.Entry = entry; _currentBytes += entry.Rented; MoveToHead_NoLock(existing); Prune_NoLock(); return; } var node = new LruNode{ Key = key, Entry = entry }; _cacheMap[key] = node; _currentBytes += entry.Rented; InsertHead_NoLock(node); Prune_NoLock(); AdaptCapacityIfPressure_NoLock(); } }
+    { lock(_cacheLock){ if(_cacheMap.TryGetValue(key,out var existing)){ _currentBytes -= existing.Entry.Rented; ArrayPool<byte>.Shared.Return(existing.Entry.Pixels); existing.Entry = entry; _currentBytes += entry.Rented; MoveToHead_NoLock(existing); Prune_NoLock(); return; } var node = new LruNode{ Key = key, Entry = entry }; _cacheMap[key] = node; _currentBytes += entry.Rented; InsertHead_NoLock(node); Prune_NoLock(); } }
 
     private void Touch(string file,long ticks,int width)
-    { var key = MakeCacheKey(file,ticks,width); lock(_cacheLock){ if(_cacheMap.TryGetValue(key, out var node)){ MoveToHead_NoLock(node); Interlocked.Increment(ref _hit); return; } } Interlocked.Increment(ref _miss); }
+    { var key = MakeCacheKey(file,ticks,width); lock(_cacheLock){ if(_cacheMap.TryGetValue(key, out var node)){ MoveToHead_NoLock(node); return; } } }
 
     private void InsertHead_NoLock(LruNode node)
     { node.Prev = null; node.Next = _head; if(_head!=null) _head.Prev = node; _head = node; if(_tail==null) _tail = node; }
@@ -333,25 +320,6 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     { if(node == _head) return; if(node.Prev!=null) node.Prev.Next = node.Next; if(node.Next!=null) node.Next.Prev = node.Prev; if(node == _tail) _tail = node.Prev; node.Prev = null; node.Next = _head; if(_head!=null) _head.Prev = node; _head = node; if(_tail==null) _tail = node; }
     private void Prune_NoLock()
     { while(_currentBytes > _byteCapacity && _tail != null){ var evict = _tail; var prev = evict.Prev; if(prev!=null) prev.Next = null; _tail = prev; if(_tail==null) _head = null; _cacheMap.Remove(evict.Key); _currentBytes -= evict.Entry.Rented; ArrayPool<byte>.Shared.Return(evict.Entry.Pixels); } }
-
-    private void AdaptCapacityIfPressure_NoLock()
-    {
-        try
-        {
-            var info = GC.GetGCMemoryInfo();
-            if(info.HighMemoryLoadThresholdBytes > 0)
-            {
-                long total = info.TotalCommittedBytes;
-                double load = (double)total / info.HighMemoryLoadThresholdBytes;
-                if(load > 0.85)
-                {
-                    long newCap = (long)(_byteCapacity * 0.8);
-                    if(newCap >= 1024*1024 && newCap < _byteCapacity){ _byteCapacity = newCap; Prune_NoLock(); }
-                }
-            }
-        }
-        catch { }
-    }
 
     private static long SafeGetTicks(string file){ try { return new FileInfo(file).LastWriteTimeUtc.Ticks; } catch { return 0; } }
 
