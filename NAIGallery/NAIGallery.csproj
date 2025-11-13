@@ -13,7 +13,6 @@
     <Nullable>enable</Nullable>
     <!-- AOT / trimming friendly settings -->
     <InvariantGlobalization Condition="'$(Configuration)' != 'Debug'">true</InvariantGlobalization>
-    <PublishAot Condition="'$(Configuration)' != 'Debug'">true</PublishAot>
     <IlcGenerateNativeIntInterop>true</IlcGenerateNativeIntInterop>
     <DebuggerSupport Condition="'$(Configuration)' != 'Debug'">false</DebuggerSupport>
   </PropertyGroup>
