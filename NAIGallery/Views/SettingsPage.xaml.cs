@@ -5,6 +5,7 @@ using Windows.Storage.Pickers;
 using WinRT.Interop;
 using System;
 using Windows.Storage;
+using NAIGallery.ViewModels;
 
 namespace NAIGallery.Views;
 
@@ -14,11 +15,14 @@ namespace NAIGallery.Views;
 public sealed partial class SettingsPage : Page
 {
     private readonly ImageIndexService _service;
+    private GalleryViewModel? _vm; // global vm reference
 
     public SettingsPage()
     {
         InitializeComponent();
         _service = ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as ImageIndexService ?? new ImageIndexService();
+        if (Application.Current.Resources.TryGetValue("GlobalGalleryVM", out var existing) && existing is GalleryViewModel gvm)
+            _vm = gvm;
 
         // Initialize UI from persisted settings if present
         try
@@ -33,6 +37,17 @@ public sealed partial class SettingsPage : Page
             _service.ThumbnailCacheCapacity = cap;
             ThumbCacheTextBox.Text = cap.ToString();
             CacheStatusText.Text = $"메모리 캐시 항목 수: {cap}"; // display only
+
+            // If VM exists, reflect current flags into UI
+            if (_vm != null)
+            {
+                if (local.Values.TryGetValue("SearchAndMode", out var andVal) && andVal is bool ab) _vm.SearchAndMode = ab;
+                if (local.Values.TryGetValue("SearchPartialMode", out var partVal) && partVal is bool pb) _vm.SearchPartialMode = pb;
+                var chkAnd = FindName("ChkAndMode") as CheckBox;
+                var chkPartial = FindName("ChkPartial") as CheckBox;
+                if (chkAnd != null) chkAnd.IsChecked = _vm.SearchAndMode;
+                if (chkPartial != null) chkPartial.IsChecked = _vm.SearchPartialMode;
+            }
         }
         catch
         {
@@ -83,5 +98,17 @@ public sealed partial class SettingsPage : Page
     {
         _service.ClearThumbnailCache();
         CacheStatusText.Text = "캐시를 삭제했습니다";
+    }
+
+    private void SearchMode_CheckChanged(object sender, RoutedEventArgs e)
+    {
+        if (_vm == null) return;
+        var chkAnd = FindName("ChkAndMode") as CheckBox;
+        var chkPartial = FindName("ChkPartial") as CheckBox;
+        _vm.SearchAndMode = chkAnd?.IsChecked == true;
+        _vm.SearchPartialMode = chkPartial?.IsChecked == true;
+        var local = ApplicationData.Current.LocalSettings;
+        local.Values["SearchAndMode"] = _vm.SearchAndMode;
+        local.Values["SearchPartialMode"] = _vm.SearchPartialMode;
     }
 }

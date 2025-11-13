@@ -14,6 +14,8 @@ using NAIGallery.Models;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 using System.Diagnostics.CodeAnalysis; // DynamicDependency for AOT
+using System.Runtime.InteropServices; // COMException
+using System.Diagnostics;
 
 namespace NAIGallery.Services;
 
@@ -36,7 +38,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private long _ioErrors, _formatErrors, _canceled, _unknownErrors;
 
     private readonly ConcurrentDictionary<string, byte> _inflight = new();
-    private readonly SemaphoreSlim _decodeGate = new(Math.Clamp(Environment.ProcessorCount/2,1,4));
+    // Decode concurrency: allow wide parallelism but cap reasonably
+    private readonly SemaphoreSlim _decodeGate = new(Math.Clamp(Environment.ProcessorCount, 2, 16));
     private static readonly SemaphoreSlim _uiGate = new(1,1);
     private readonly ConcurrentDictionary<string,int> _fileGeneration = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string,int> _maxRequested = new(StringComparer.OrdinalIgnoreCase);
@@ -54,10 +57,15 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private readonly CancellationTokenSource _schedCts = new();
     private int _activeWorkers = 0;
     private volatile int _epoch = 0;
-    private int _targetWorkers = Math.Clamp(Environment.ProcessorCount - 1, 2, 12);
+    private int _targetWorkers = Math.Clamp(Environment.ProcessorCount - 1, 2, 16);
+
+    // UI responsiveness monitor
+    private Timer? _uiPulseTimer;
+    private double _uiLagMs;
+    private volatile bool _uiBusy;
 
     public void InitializeDispatcher(DispatcherQueue dispatcherQueue)
-    { _dispatcher = dispatcherQueue; EnsureWorkers(); }
+    { _dispatcher = dispatcherQueue; StartUiPulseMonitor(); EnsureWorkers(); }
 
     public int CacheCapacity
     {
@@ -125,8 +133,20 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private void UpdateWorkerTarget()
     {
         int backlog = _high.Count + _normal.Count;
-        int ideal = backlog <= 4 ? 1 : backlog <= 12 ? 2 : backlog <= 32 ? 3 : backlog <= 64 ? 4 : 6;
-        ideal = Math.Min(ideal, Math.Max(2, Environment.ProcessorCount - 1));
+        int cpu = Math.Max(2, Environment.ProcessorCount);
+        int ideal;
+        if (backlog <= 4) ideal = Math.Min(cpu, 4);
+        else if (backlog <= 12) ideal = Math.Min(cpu + 2, 8);
+        else if (backlog <= 32) ideal = Math.Min(cpu + 4, 12);
+        else ideal = Math.Min(cpu * 2, 16);
+        // If UI is busy, scale down to leave headroom
+        if (_uiBusy)
+        {
+            int reserve = Math.Clamp(cpu / 3, 1, 4); // reserve ~1/3 cores for UI/animations
+            ideal = Math.Max(1, Math.Min(ideal, cpu - reserve));
+            ideal = Math.Min(ideal, 8);
+        }
+        ideal = Math.Clamp(ideal, 2, 16);
         int cur = _targetWorkers;
         if(ideal != cur){ _targetWorkers = ideal; EnsureWorkers(); }
     }
@@ -139,6 +159,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private async Task WorkerLoopAsync()
     {
+        // Lower worker thread priority to avoid preempting UI
+        try { Thread.CurrentThread.Priority = ThreadPriority.BelowNormal; } catch { }
+
         var token = _schedCts.Token;
         try
         {
@@ -148,6 +171,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 { await Task.Delay(30, token).ConfigureAwait(false); if(_high.IsEmpty && _normal.IsEmpty && _activeWorkers>1) break; continue; }
                 if(req.Epoch < _epoch) continue; if((req.Meta.ThumbnailPixelWidth ?? 0) >= req.Width) continue;
                 try { await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); } catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); }
+                // Cooperatively yield to keep UI responsive
+                await Task.Yield();
             }
         }
         catch(OperationCanceledException) { }
@@ -192,7 +217,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     public async Task PreloadAsync(IEnumerable<ImageMetadata> items, int decodeWidth, CancellationToken ct, int maxParallelism)
     {
         if(ct.IsCancellationRequested) return;
-        if(maxParallelism<=0){ int cpu = Math.Max(1,Environment.ProcessorCount-1); maxParallelism = Math.Clamp(cpu,2,12);}        
+        if(maxParallelism<=0)
+        {
+            int cpu = Math.Max(1,Environment.ProcessorCount-1);
+            int reserve = _uiBusy ? Math.Max(1, cpu/2) : Math.Max(1, cpu/4);
+            int effective = Math.Max(1, cpu - reserve);
+            maxParallelism = Math.Clamp(effective, 2, _uiBusy ? 8 : 24);
+        }
         if(maxParallelism<=1){ foreach(var m in items){ if(ct.IsCancellationRequested) break; await EnsureThumbnailAsync(m, decodeWidth, ct, false).ConfigureAwait(false);} return; }
         var po = new ParallelOptions{ MaxDegreeOfParallelism = maxParallelism, CancellationToken = ct};
         await Parallel.ForEachAsync(items, po, async (m, token)=> await EnsureThumbnailAsync(m, decodeWidth, token, false).ConfigureAwait(false));
@@ -225,6 +256,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             catch (IOException) { Interlocked.Increment(ref _ioErrors); }
             catch (UnauthorizedAccessException) { Interlocked.Increment(ref _ioErrors); }
             catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); }
+            catch (COMException) { Interlocked.Increment(ref _unknownErrors); }
             catch (Exception ex) { Interlocked.Increment(ref _unknownErrors); if(_logger!=null) _logger.LogDebug(ex, "Decode error {File}", meta.FilePath); }
             finally { _decodeGate.Release(); }
         }
@@ -244,10 +276,20 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             double scale = Math.Min(1.0, targetWidth/(double)sw);
             uint ow = (uint)Math.Max(1, Math.Round(sw*scale)); uint oh = (uint)Math.Max(1, Math.Round(sh*scale));
             var transform = new BitmapTransform{ ScaledWidth = ow, ScaledHeight = oh, InterpolationMode = BitmapInterpolationMode.Fant };
-            var sb = await decoder.GetSoftwareBitmapAsync(decoder.BitmapPixelFormat, decoder.BitmapAlphaMode, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
-            if(sb.BitmapPixelFormat!= BitmapPixelFormat.Bgra8 || sb.BitmapAlphaMode!= BitmapAlphaMode.Premultiplied)
-            { var conv = SoftwareBitmap.Convert(sb, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied); sb.Dispose(); sb = conv; }
-            return sb;
+            // Request BGRA8 Premultiplied directly to avoid an extra conversion step (and some native errors)
+            try
+            {
+                var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+                return sb;
+            }
+            catch (COMException)
+            {
+                // Fallback path: let decoder pick defaults, then convert
+                var sb = await decoder.GetSoftwareBitmapAsync(decoder.BitmapPixelFormat, decoder.BitmapAlphaMode, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.ColorManageToSRgb);
+                if(sb.BitmapPixelFormat!= BitmapPixelFormat.Bgra8 || sb.BitmapAlphaMode!= BitmapAlphaMode.Premultiplied)
+                { var conv = SoftwareBitmap.Convert(sb, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied); sb.Dispose(); sb = conv; }
+                return sb;
+            }
         }
         catch (OperationCanceledException) { return null; }
         catch { return null; }
@@ -264,7 +306,20 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 try
                 {
                     var wb = new WriteableBitmap(entry.W, entry.H);
-                    try { using var s = wb.PixelBuffer.AsStream(); s.Write(entry.Pixels,0, entry.W*entry.H*4); wb.Invalidate(); } catch {}
+                    try 
+                    { 
+                        var buffer = wb.PixelBuffer; 
+                        int expected = entry.W*entry.H*4;
+                        int capacity = (int)buffer.Capacity;
+                        int toWrite = Math.Min(expected, capacity);
+                        using var s = buffer.AsStream();
+                        s.Write(entry.Pixels,0, toWrite); 
+                        wb.Invalidate(); 
+                    } 
+                    catch (Exception ex)
+                    { 
+                        _logger?.LogDebug(ex, "PixelBuffer write failed {File}", meta.FilePath);
+                    }
                     EnqueueApply(meta, wb, width, gen, allowDownscale);
                 }
                 finally { _uiGate.Release(); }
@@ -289,7 +344,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 while(!_applySuspended && _applyQ.TryDequeue(out var item))
                 {
                     TryApply(item.Meta,item.Src,item.Width,item.Gen,false);
-                    processed++; if(processed>=24){ processed=0; await Task.Yield(); }
+                    processed++; if(processed>=12){ processed=0; await Task.Yield(); }
                 }
             }
             finally { Interlocked.Exchange(ref _applyScheduled,0); if(!_applySuspended && !_applyQ.IsEmpty) ScheduleDrain(); }
@@ -326,5 +381,31 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private static long SafeGetTicks(string file){ try { return new FileInfo(file).LastWriteTimeUtc.Ticks; } catch { return 0; } }
 
-    public void Dispose(){ try { _schedCts.Cancel(); } catch { } _schedCts.Dispose(); }
+    private void StartUiPulseMonitor()
+    {
+        try
+        {
+            _uiPulseTimer?.Dispose();
+            _uiPulseTimer = new Timer(_ =>
+            {
+                if (_dispatcher == null) return;
+                long stamp = Stopwatch.GetTimestamp();
+                _dispatcher.TryEnqueue(DispatcherQueuePriority.Normal, () =>
+                {
+                    double ms = (Stopwatch.GetTimestamp() - stamp) * 1000.0 / Stopwatch.Frequency;
+                    // EMA smoothing
+                    _uiLagMs = _uiLagMs <= 0 ? ms : (_uiLagMs * 0.85 + ms * 0.15);
+                    bool busy = ms > 40 || _uiLagMs > 25;
+                    if (busy != _uiBusy)
+                    {
+                        _uiBusy = busy;
+                        UpdateWorkerTarget();
+                    }
+                });
+            }, null, dueTime: 0, period: 250);
+        }
+        catch { }
+    }
+
+    public void Dispose(){ try { _schedCts.Cancel(); } catch { } _schedCts.Dispose(); try { _uiPulseTimer?.Dispose(); } catch { } }
 }

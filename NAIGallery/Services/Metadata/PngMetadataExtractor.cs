@@ -62,7 +62,7 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
                 {
                     if (line.StartsWith("Negative prompt:", StringComparison.OrdinalIgnoreCase))
                         negative = line["Negative prompt:".Length..].Trim();
-                    if (line.Contains(':') && line.Contains(',') && line.IndexOf(':') < line.IndexOf(','))
+                    if (line.Contains(':' ) && line.Contains(',') && line.IndexOf(':') < line.IndexOf(','))
                     {
                         foreach (var seg in line.Split(',', StringSplitOptions.RemoveEmptyEntries))
                         {
@@ -151,7 +151,17 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
             if (v4Obj.TryGetProperty("caption", out var captionObj) && captionObj.ValueKind == JsonValueKind.Object)
             {
                 if (captionObj.TryGetProperty("base_caption", out var baseCapProp)) baseCaption ??= baseCapProp.GetString();
-                if (v4Obj.TryGetProperty("char_captions", out var chars) && chars.ValueKind == JsonValueKind.Array)
+
+                // In NovelAI v4 schema, char_captions typically lives under the "caption" object.
+                // Support both locations for compatibility (under caption first, then fallback to v4Obj).
+                JsonElement chars;
+                bool hasChars = captionObj.TryGetProperty("char_captions", out chars) && chars.ValueKind == JsonValueKind.Array;
+                if (!hasChars && v4Obj.TryGetProperty("char_captions", out var topChars) && topChars.ValueKind == JsonValueKind.Array)
+                {
+                    chars = topChars; hasChars = true;
+                }
+
+                if (hasChars)
                 {
                     int i = 0;
                     foreach (var c in chars.EnumerateArray())

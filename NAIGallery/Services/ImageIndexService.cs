@@ -157,6 +157,7 @@ public class ImageIndexService : IImageIndexService
                         if (meta != null)
                         {
                             meta.SearchText = BuildSearchText(meta);
+                            meta.TokenSet = BuildTokenSet(meta);
                             _index[file] = meta;
                             tagBatches.Add(meta.Tags);
                             _searchIndex.Index(meta);
@@ -205,6 +206,7 @@ public class ImageIndexService : IImageIndexService
                     meta.FilePath = Path.GetFullPath(Path.Combine(folder, meta.FilePath));
                 meta.Tags ??= new();
                 meta.SearchText = BuildSearchText(meta);
+                meta.TokenSet = BuildTokenSet(meta);
                 if (meta.LastWriteTimeTicks == null)
                 {
                     try { meta.LastWriteTimeTicks = new FileInfo(meta.FilePath).LastWriteTimeUtc.Ticks; } catch { }
@@ -256,33 +258,75 @@ public class ImageIndexService : IImageIndexService
 
     public IEnumerable<ImageMetadata> SearchByTag(string query)
     {
+        // Keep original OR search for backwards compatibility
+        return Search(query, andMode: false, partialMode: true);
+    }
+
+    public IEnumerable<ImageMetadata> Search(string query, bool andMode, bool partialMode)
+    {
         if (string.IsNullOrWhiteSpace(query)) return All;
         var tokens = query.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                           .Select(t => t.ToLowerInvariant())
                           .Distinct()
                           .ToArray();
         if (tokens.Length == 0) return All;
-        var candidates = _searchIndex.QueryTokens(tokens);
-        if (candidates.Count == 0) return Array.Empty<ImageMetadata>();
-        return candidates.Select(m =>
+
+        // Candidate gathering (exact token OR index)
+        var exactCandidates = _searchIndex.QueryTokens(tokens);
+        HashSet<ImageMetadata> candidateSet = new();
+        foreach (var c in exactCandidates) candidateSet.Add(c);
+
+        if (partialMode)
+        {
+            // Expand by prefix/substring matches over token sets if partial requested
+            foreach (var m in _index.Values)
+            {
+                var set = m.TokenSet ??= BuildTokenSet(m);
+                foreach (var tok in tokens)
+                {
+                    if (set.Any(t => t.Contains(tok, StringComparison.Ordinal))) { candidateSet.Add(m); break; }
+                }
+            }
+        }
+        if (candidateSet.Count == 0) return Array.Empty<ImageMetadata>();
+
+        // Scoring & AND filter
+        var results = new List<(ImageMetadata m, bool any, int tagHits, int score, int tokenHits)>();
+        foreach (var m in candidateSet)
         {
             var hay = m.SearchText ??= BuildSearchText(m);
-            int score = 0, tagHits = 0; bool any = false;
+            var set = m.TokenSet ??= BuildTokenSet(m);
+            int score = 0, tagHits = 0, tokenHits = 0; bool any = false; bool allMatch = true;
             foreach (var tok in tokens)
             {
-                int idx = hay.IndexOf(tok, StringComparison.Ordinal);
-                if (idx < 0) continue; any = true;
-                int occ = 0;
-                while (idx >= 0) { occ++; idx = hay.IndexOf(tok, idx + tok.Length, StringComparison.Ordinal); }
-                score += occ * Math.Max(1, tok.Length);
-                if (m.Tags.Any(t => t.Contains(tok, StringComparison.OrdinalIgnoreCase))) tagHits++;
+                bool matched = false;
+                if (set.Contains(tok)) { matched = true; score += Math.Max(1, tok.Length); }
+                else if (partialMode && set.Any(t => t.Contains(tok, StringComparison.Ordinal))) { matched = true; score += Math.Max(1, tok.Length / 2); }
+                else if (!partialMode)
+                {
+                    int idx = hay.IndexOf(tok, StringComparison.Ordinal);
+                    if (idx >= 0)
+                    {
+                        matched = true; int occ = 0; while (idx >= 0) { occ++; idx = hay.IndexOf(tok, idx + tok.Length, StringComparison.Ordinal); }
+                        score += occ * Math.Max(1, tok.Length);
+                    }
+                }
+                if (matched)
+                {
+                    any = true; tokenHits++; if (m.Tags.Any(t => t.Contains(tok, StringComparison.OrdinalIgnoreCase))) tagHits++;
+                }
+                else if (andMode) { allMatch = false; }
             }
-            return (m, any, tagHits, score);
-        })
-        .Where(r => r.any)
-        .OrderByDescending(r => r.tagHits)
-        .ThenByDescending(r => r.score)
-        .Select(r => r.m);
+            if (!any) continue;
+            if (andMode && !allMatch) continue;
+            results.Add((m, any, tagHits, score, tokenHits));
+        }
+
+        return results
+            .OrderByDescending(r => r.tagHits)
+            .ThenByDescending(r => r.tokenHits)
+            .ThenByDescending(r => r.score)
+            .Select(r => r.m);
     }
 
     public void RefreshMetadata(ImageMetadata meta)
@@ -300,6 +344,7 @@ public class ImageIndexService : IImageIndexService
                 if (string.IsNullOrWhiteSpace(meta.NegativePrompt) && !string.IsNullOrWhiteSpace(parsed.NegativePrompt)) meta.NegativePrompt = parsed.NegativePrompt;
                 if (meta.Parameters == null && parsed.Parameters != null) meta.Parameters = parsed.Parameters;
                 meta.SearchText = BuildSearchText(meta);
+                meta.TokenSet = BuildTokenSet(meta);
                 _searchIndex.Index(meta);
                 _index[meta.FilePath] = meta;
                 InvalidateSorted();
@@ -324,6 +369,30 @@ public class ImageIndexService : IImageIndexService
                 if (!string.IsNullOrEmpty(cp.NegativePrompt)) sb.Append(cp.NegativePrompt).Append(' ');
             }
         return sb.ToString().ToLowerInvariant();
+    }
+
+    private static HashSet<string> BuildTokenSet(ImageMetadata m)
+    {
+        var hs = new HashSet<string>(StringComparer.Ordinal);
+        void Add(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            foreach (var tok in text.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (tok.Length <= 1 || tok.Length > 64) continue;
+                hs.Add(tok.ToLowerInvariant());
+            }
+        }
+        foreach (var t in m.Tags) Add(t);
+        Add(m.Prompt); Add(m.NegativePrompt); Add(m.BasePrompt); Add(m.BaseNegativePrompt);
+        if (m.CharacterPrompts != null)
+        {
+            foreach (var cp in m.CharacterPrompts)
+            {
+                Add(cp.Prompt); Add(cp.NegativePrompt);
+            }
+        }
+        return hs;
     }
 
     public IEnumerable<string> SuggestTags(string prefix)

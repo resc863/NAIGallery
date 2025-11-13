@@ -243,4 +243,27 @@ public sealed partial class GalleryPage : Page
         }
         catch { return 8; }
     }
+
+    // AutoSuggestBox handlers
+    private void SearchBox_TextChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args)
+    {
+        // Suggestions driven by ViewModel OnSearchQueryChanged; no extra logic needed except manual refresh for non-user changes
+        if (args.Reason == AutoSuggestionBoxTextChangeReason.UserInput)
+        {
+            // ViewModel already updates suggestions via property change hook
+        }
+    }
+
+    private void SearchBox_SuggestionChosen(AutoSuggestBox sender, AutoSuggestBoxSuggestionChosenEventArgs args)
+    {
+        if (args.SelectedItem is string s && ViewModel != null)
+        {
+            // Replace last token with chosen suggestion
+            var parts = (ViewModel.SearchQuery ?? string.Empty)
+                .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+            if (parts.Count > 0) parts[^1] = s; else parts.Add(s);
+            ViewModel.SearchQuery = string.Join(" ", parts);
+        }
+    }
 }

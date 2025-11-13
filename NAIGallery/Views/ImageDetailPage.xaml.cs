@@ -10,7 +10,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using System.IO;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
-using NAIGallery.Models;
+using NAIGallery.Models; // added
 using NAIGallery.ViewModels; // added
 using System.Collections.Generic; // added
 using Microsoft.UI.Xaml.Media.Animation;
@@ -447,8 +447,12 @@ public sealed partial class ImageDetailPage : Page
                 // Try to enrich with v4 fields if missing
                 _service.RefreshMetadata(meta);
 
+                bool hasBase = !string.IsNullOrWhiteSpace(meta.BasePrompt) || !string.IsNullOrWhiteSpace(meta.BaseNegativePrompt);
+                bool hasChars = meta.CharacterPrompts != null && meta.CharacterPrompts.Count > 0;
+                bool hasV4 = hasBase || hasChars;
+
                 // Base v4 prompts
-                if (!string.IsNullOrWhiteSpace(meta.BasePrompt) || !string.IsNullOrWhiteSpace(meta.BaseNegativePrompt))
+                if (hasBase)
                 {
                     BasePromptSection.Visibility = Visibility.Visible;
                     BasePromptText.Text = meta.BasePrompt ?? string.Empty;
@@ -457,10 +461,12 @@ public sealed partial class ImageDetailPage : Page
                 else
                 {
                     BasePromptSection.Visibility = Visibility.Collapsed;
+                    BasePromptText.Text = string.Empty;
+                    BaseNegativePromptText.Text = string.Empty;
                 }
 
                 // Character prompts
-                if (meta.CharacterPrompts != null && meta.CharacterPrompts.Count > 0)
+                if (hasChars)
                 {
                     CharacterPromptSection.Visibility = Visibility.Visible;
                     CharacterPromptsRepeater.ItemsSource = meta.CharacterPrompts;
@@ -471,14 +477,23 @@ public sealed partial class ImageDetailPage : Page
                     CharacterPromptsRepeater.ItemsSource = null;
                 }
 
-                // Legacy prompts
+                // Legacy prompts - only show when v4 not present
+                var legacyVis = hasV4 ? Visibility.Collapsed : Visibility.Visible;
+                if (PromptLabel != null) PromptLabel.Visibility = legacyVis;
+                if (PromptText != null) PromptText.Visibility = legacyVis;
+                if (NegativePromptLabel != null) NegativePromptLabel.Visibility = legacyVis;
+                if (NegativePromptText != null) NegativePromptText.Visibility = legacyVis;
+
                 PromptText.Text = meta.Prompt ?? string.Empty;
                 NegativePromptText.Text = meta.NegativePrompt ?? string.Empty;
 
                 // Parameters
                 if (meta.Parameters != null && meta.Parameters.Count > 0)
                 {
-                    ParamsRepeater.ItemsSource = meta.Parameters.Select(kv => new KeyValuePair<string,string>(kv.Key, kv.Value)).ToList();
+                    // Provide strongly-typed items matching XAML DataTemplate (models:ParamEntry)
+                    ParamsRepeater.ItemsSource = meta.Parameters
+                        .Select(kv => new ParamEntry { Key = kv.Key, Value = kv.Value })
+                        .ToList();
                 }
                 else
                 {
@@ -494,6 +509,10 @@ public sealed partial class ImageDetailPage : Page
                 CharacterPromptsRepeater.ItemsSource = null;
                 PromptText.Text = string.Empty;
                 NegativePromptText.Text = string.Empty;
+                if (PromptLabel != null) PromptLabel.Visibility = Visibility.Visible;
+                if (PromptText != null) PromptText.Visibility = Visibility.Visible;
+                if (NegativePromptLabel != null) NegativePromptLabel.Visibility = Visibility.Visible;
+                if (NegativePromptText != null) NegativePromptText.Visibility = Visibility.Visible;
                 ParamsRepeater.ItemsSource = null;
             }
         }

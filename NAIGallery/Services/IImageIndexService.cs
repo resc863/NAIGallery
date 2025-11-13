@@ -22,6 +22,12 @@ public interface IImageIndexService
     /// <summary>Search by tag/prompt tokens.</summary>
     IEnumerable<ImageMetadata> SearchByTag(string query);
 
+    /// <summary>Search with configurable options for AND/OR and partial matching.</summary>
+    IEnumerable<ImageMetadata> Search(string query, bool andMode, bool partialMode);
+
+    /// <summary>Get tag suggestions based on a prefix.</summary>
+    IEnumerable<string> SuggestTags(string prefix);
+
     /// <summary>Ensure a thumbnail of at least the given width is available (progressive upgrade allowed).</summary>
     Task EnsureThumbnailAsync(ImageMetadata meta, int decodeWidth = 256, CancellationToken ct = default, bool allowDownscale = false);
 

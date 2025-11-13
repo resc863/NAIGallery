@@ -10,8 +10,8 @@
     xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
     <Grid RowDefinitions="Auto,*" ColumnDefinitions="*" KeyDown="Root_KeyDown" KeyUp="Root_KeyUp" PointerWheelChanged="Root_PointerWheelChanged">
         <!-- Top bar with centered search -->
-        <Grid x:Name="TopBar" Grid.Row="0" Margin="8" ColumnDefinitions="Auto,*" VerticalAlignment="Top">
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+        <RelativePanel x:Name="TopBar" Grid.Row="0" Margin="8" VerticalAlignment="Top">
+            <StackPanel x:Name="LeftBar" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" RelativePanel.AlignLeftWithPanel="True">
                 <Button Content="폴더 열기" Click="OpenFolder_Click" />
                 <ComboBox x:Name="SortFieldCombo" Width="120" SelectionChanged="SortFieldCombo_SelectionChanged">
                     <ComboBoxItem Content="이름" Tag="Name" />
@@ -23,8 +23,17 @@
                 <!-- x:Bind instead of Binding for AOT friendliness -->
                 <ProgressRing IsActive="{x:Bind ViewModel.IsIndexing, Mode=OneWay}" Width="28" Height="28" />
             </StackPanel>
-            <TextBox Grid.Column="1" Width="500" HorizontalAlignment="Center" PlaceholderText="태그 검색" Text="{x:Bind ViewModel.SearchQuery, Mode=TwoWay}" />
-        </Grid>
+            <AutoSuggestBox x:Name="SearchBox"
+                            Width="500"
+                            PlaceholderText="태그 검색"
+                            Text="{x:Bind ViewModel.SearchQuery, Mode=TwoWay}"
+                            RelativePanel.AlignHorizontalCenterWithPanel="True"
+                            VerticalAlignment="Center"
+                            ItemsSource="{x:Bind ViewModel.TagSuggestions, Mode=OneWay}"
+                            QueryIcon="Find"
+                            TextChanged="SearchBox_TextChanged"
+                            SuggestionChosen="SearchBox_SuggestionChosen" />
+        </RelativePanel>
 
         <!-- ScrollViewer hosting ItemsRepeater using toolkit StaggeredLayout (masonry) -->
         <ScrollViewer x:Name="RepeaterScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">

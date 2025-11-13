@@ -8,6 +8,11 @@
             <TextBlock Text="설정" FontSize="28" FontWeight="Bold" />
             <TextBlock Text="검색 옵션" FontWeight="SemiBold" />
             <StackPanel Orientation="Horizontal" Spacing="12">
+                <CheckBox x:Name="ChkAndMode" Content="AND 모드" IsChecked="False" Checked="SearchMode_CheckChanged" Unchecked="SearchMode_CheckChanged" />
+                <CheckBox x:Name="ChkPartial" Content="부분일치" IsChecked="True" Checked="SearchMode_CheckChanged" Unchecked="SearchMode_CheckChanged" />
+            </StackPanel>
+            <TextBlock Text="기본 필드 포함" FontWeight="SemiBold" />
+            <StackPanel Orientation="Horizontal" Spacing="12">
                 <CheckBox x:Name="ChkIncludeTags" Content="태그" IsChecked="True" />
                 <CheckBox x:Name="ChkIncludePrompt" Content="프롬프트" IsChecked="True" />
                 <CheckBox x:Name="ChkIncludeNegative" Content="네거티브" IsChecked="True" />
