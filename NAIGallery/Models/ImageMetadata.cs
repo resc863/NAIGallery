@@ -96,3 +96,9 @@ public class CharacterPrompt
     /// <summary>Negative prompt text for the character.</summary>
     public string? NegativePrompt { get; set; }
 }
+
+public class ParamEntry
+{
+    public string Key { get; set; } = string.Empty;
+    public string Value { get; set; } = string.Empty;
+}

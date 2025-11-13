@@ -13,11 +13,17 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using NAIGallery.Models;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
+using System.Diagnostics.CodeAnalysis; // DynamicDependency for AOT
 
 namespace NAIGallery.Services;
 
 internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 {
+    // Hint trimmer: keep WriteableBitmap public constructors
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(WriteableBitmap))]
+    public ThumbnailPipeline(int capacityBytes, ILogger? logger=null)
+    { _logger = logger; _byteCapacity = Math.Max(1, capacityBytes); }
+
     private readonly ILogger? _logger;
     private DispatcherQueue? _dispatcher;
 
@@ -49,9 +55,6 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private int _activeWorkers = 0;
     private volatile int _epoch = 0;
     private int _targetWorkers = Math.Clamp(Environment.ProcessorCount - 1, 2, 12);
-
-    public ThumbnailPipeline(int capacityBytes, ILogger? logger=null)
-    { _logger = logger; _byteCapacity = Math.Max(1, capacityBytes); }
 
     public void InitializeDispatcher(DispatcherQueue dispatcherQueue)
     { _dispatcher = dispatcherQueue; EnsureWorkers(); }

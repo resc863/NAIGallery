@@ -24,8 +24,7 @@
             <Style TargetType="Button">
                 <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />
             </Style>
-
-            <!-- Make NavigationView use transparent backgrounds so Mica shows through -->
+            <!-- NavigationView transparent backgrounds -->
             <SolidColorBrush x:Key="NavigationViewBackground" Color="Transparent" />
             <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="Transparent" />
             <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="Transparent" />

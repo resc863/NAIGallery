@@ -20,13 +20,8 @@ using System.Diagnostics; // debug
 
 namespace NAIGallery.Views;
 
-/// <summary>
-/// Displays a single image with smooth connected animation from the gallery, supports zoom/pan,
-/// and shows parsed prompts and parameters.
-/// </summary>
 public sealed partial class ImageDetailPage : Page
 {
-    // Use interface to ensure we get the same singleton registered in DI (was concrete -> new instance -> missing metadata)
     private readonly IImageIndexService _service;
     private double _currentScale = 1.0;
     private string? _pendingPath;
@@ -35,22 +30,13 @@ public sealed partial class ImageDetailPage : Page
     private Point _panStartPoint;
     private double _startTranslateX;
     private double _startTranslateY;
-
-    // Connected animation state
     private bool _isForwardConnectedAnimating = false;
-    private bool _pendingCenterAfterAnim = false; // reserved for future logic
     private bool _forwardStarted = false;
     private bool _pendingForwardCA = false;
     private bool _imageOpened = false;
-
-    // Navigation / sequencing
     private int _loadSeq = 0;
     private string? _currentPath;
-
-    // Temp state for CA visual alignment
     private RectangleGeometry? _savedHostClip = null;
-
-    // Splitter state
     private bool _resizing = false;
     private double _initialMetaWidth;
     private double _initialPointerX;
@@ -58,22 +44,18 @@ public sealed partial class ImageDetailPage : Page
     private const double MetaMaxWidth = 1000;
     private readonly Brush _splitterBaseBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(4,0,0,0));
     private readonly Brush _splitterHoverBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(40,0,0,0));
-
-    // Background thumbnail request CTS
     private CancellationTokenSource? _thumbCts;
 
     public ImageDetailPage()
     {
-        this.InitializeComponent();
-        // Resolve via interface; fall back only if DI not configured
+        InitializeComponent();
         _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService
                     ?? ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as IImageIndexService
                     ?? new ImageIndexService();
-        Debug.WriteLine($"[Detail][Init] Service instance hash={_service.GetHashCode()} indexed={_service.All.Count()} images");
-        this.PointerWheelChanged += ImageDetailPage_PointerWheelChanged;
-        this.SizeChanged += ImageDetailPage_SizeChanged;
-        this.Loaded += ImageDetailPage_Loaded;
-        this.Unloaded += ImageDetailPage_Unloaded;
+        PointerWheelChanged += ImageDetailPage_PointerWheelChanged;
+        SizeChanged += ImageDetailPage_SizeChanged;
+        Loaded += ImageDetailPage_Loaded;
+        Unloaded += ImageDetailPage_Unloaded;
     }
 
     private void ImageDetailPage_Unloaded(object sender, RoutedEventArgs e)

@@ -20,14 +20,15 @@
                 <ToggleButton Width="40" Click="SortDirectionToggle_Click">
                     <TextBlock x:Name="SortDirText" Text="↑" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </ToggleButton>
-                <ProgressRing IsActive="{Binding IsIndexing}" Width="28" Height="28" />
+                <!-- x:Bind instead of Binding for AOT friendliness -->
+                <ProgressRing IsActive="{x:Bind ViewModel.IsIndexing, Mode=OneWay}" Width="28" Height="28" />
             </StackPanel>
-            <TextBox Grid.Column="1" Width="500" HorizontalAlignment="Center" PlaceholderText="태그 검색" Text="{Binding SearchQuery, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBox Grid.Column="1" Width="500" HorizontalAlignment="Center" PlaceholderText="태그 검색" Text="{x:Bind ViewModel.SearchQuery, Mode=TwoWay}" />
         </Grid>
 
         <!-- ScrollViewer hosting ItemsRepeater using toolkit StaggeredLayout (masonry) -->
         <ScrollViewer x:Name="RepeaterScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-            <muxc:ItemsRepeater x:Name="GalleryView" ItemsSource="{Binding Images}">
+            <muxc:ItemsRepeater x:Name="GalleryView" ItemsSource="{x:Bind ViewModel.Images, Mode=OneWay}">
                 <muxc:ItemsRepeater.Layout>
                     <toolkit:StaggeredLayout DesiredColumnWidth="{x:Bind MinItemWidth, Mode=OneWay}" />
                 </muxc:ItemsRepeater.Layout>

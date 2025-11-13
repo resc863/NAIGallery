@@ -7,6 +7,7 @@ using Windows.Storage; // for ApplicationData
 using Microsoft.UI.Dispatching; // DispatcherQueue
 using Microsoft.Extensions.Logging;
 using NAIGallery.Services.Metadata;
+using System.Diagnostics.CodeAnalysis; // for DynamicDependency
 
 namespace NAIGallery
 {
@@ -21,6 +22,9 @@ namespace NAIGallery
         /// <summary>Service provider hosting application singletons.</summary>
         public IServiceProvider Services { get; }
 
+        // DynamicDependency attributes help the trimmer keep required members (AOT friendly)
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(PngMetadataExtractor))]
+        [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CompositeMetadataExtractor))]
         public App()
         {
             InitializeComponent();
