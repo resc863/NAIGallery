@@ -4,10 +4,9 @@ using Microsoft.UI.Xaml.Input;
 using NAIGallery.Services;
 using NAIGallery.ViewModels;
 using NAIGallery.Models;
-using Windows.Storage.Pickers;
+using Microsoft.Windows.Storage.Pickers;
 using WinRT.Interop;
 using System;
-using Windows.System;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,6 +16,8 @@ using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Animation;
 using Windows.Foundation;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
+using Microsoft.UI; // Added for Win32Interop
 
 namespace NAIGallery.Views;
 
@@ -185,17 +186,17 @@ public sealed partial class GalleryPage : Page
     private void OpenFolder_Click(object sender, RoutedEventArgs e) => _ = OpenFolderAsync();
     private async Task OpenFolderAsync()
     {
-        var picker = new FolderPicker();
-        var hwnd = WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
-        InitializeWithWindow.Initialize(picker, hwnd);
-        picker.FileTypeFilter.Add("*");
         try
         {
-            var folder = await picker.PickSingleFolderAsync();
-            if (folder != null)
+            var hwnd = WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
+            var windowId = Win32Interop.GetWindowIdFromWindow(hwnd);
+            var picker = new FolderPicker(windowId);
+            var result = await picker.PickSingleFolderAsync();
+            var path = result?.Path;
+            if (!string.IsNullOrWhiteSpace(path))
             {
                 _initialPrimed = false;
-                await ViewModel.IndexFolderAsync(folder.Path);
+                await ViewModel.IndexFolderAsync(path);
                 await PrimeInitialAsync();
             }
         }

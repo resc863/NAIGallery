@@ -3,11 +3,12 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using NAIGallery.Services;
 using Microsoft.Extensions.DependencyInjection;
-using Windows.Storage; // for ApplicationData
 using Microsoft.UI.Dispatching; // DispatcherQueue
 using Microsoft.Extensions.Logging;
 using NAIGallery.Services.Metadata;
-using System.Diagnostics.CodeAnalysis; // for DynamicDependency
+using System.Diagnostics.CodeAnalysis; // DynamicDependency
+using System.IO;
+using System.Text.Json;
 
 namespace NAIGallery
 {
@@ -21,6 +22,49 @@ namespace NAIGallery
         public Window? MainWindow => _window;
         /// <summary>Service provider hosting application singletons.</summary>
         public IServiceProvider Services { get; }
+
+        public class AppSettings // changed from sealed private to public
+        {
+            public int? ThumbCacheCapacity { get; set; }
+        }
+
+        private static string GetSettingsPath()
+        {
+            try
+            {
+                var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                var dir = Path.Combine(root, "NAIGallery");
+                Directory.CreateDirectory(dir);
+                return Path.Combine(dir, "settings.json");
+            }
+            catch { return Path.Combine(Path.GetTempPath(), "NAIGallery.settings.json"); }
+        }
+
+        private static AppSettings LoadSettings()
+        {
+            try
+            {
+                var path = GetSettingsPath();
+                if (File.Exists(path))
+                {
+                    var json = File.ReadAllText(path);
+                    return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                }
+            }
+            catch { }
+            return new AppSettings();
+        }
+
+        public static void SaveSettings(AppSettings s)
+        {
+            try
+            {
+                var path = GetSettingsPath();
+                var json = JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(path, json);
+            }
+            catch { }
+        }
 
         // DynamicDependency attributes help the trimmer keep required members (AOT friendly)
         [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(PngMetadataExtractor))]
@@ -49,17 +93,13 @@ namespace NAIGallery
             services.AddSingleton<IImageIndexService, ImageIndexService>();
             Services = services.BuildServiceProvider();
 
-            // Apply persisted user settings to services when available
+            // Apply persisted settings via plain file storage
             try
             {
-                if (Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
+                var settings = LoadSettings();
+                if (settings.ThumbCacheCapacity.HasValue && Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
                 {
-                    var local = ApplicationData.Current.LocalSettings;
-                    if (local.Values.TryGetValue("ThumbCacheCapacity", out object? val) && val != null)
-                    {
-                        if (val is int i) svc.ThumbnailCacheCapacity = i;
-                        else if (val is string s && int.TryParse(s, out var j)) svc.ThumbnailCacheCapacity = j;
-                    }
+                    svc.ThumbnailCacheCapacity = settings.ThumbCacheCapacity.Value;
                 }
             }
             catch { }
