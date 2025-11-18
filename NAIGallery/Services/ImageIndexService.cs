@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
+using NAIGallery; // AppDefaults
 using NAIGallery.Models;
 using NAIGallery.Services.Metadata;
 
@@ -29,7 +30,7 @@ public class ImageIndexService : IImageIndexService
     private readonly IThumbnailPipeline _thumbPipeline;
     private readonly IMetadataExtractor _metadataExtractor;
 
-    private int _thumbCapacity = 5000;
+    private int _thumbCapacity = AppDefaults.DefaultThumbnailCapacityBytes;
     public event Action<int>? ThumbnailCacheCapacityChanged;
 
     private volatile List<ImageMetadata>? _sortedCache;
@@ -60,7 +61,7 @@ public class ImageIndexService : IImageIndexService
         get => _thumbCapacity;
         set
         {
-            int newCap = Math.Max(100, value);
+            int newCap = Math.Max(AppDefaults.MinThumbnailCacheCapacity, value);
             if (newCap == _thumbCapacity) return;
             _thumbCapacity = newCap;
             _thumbPipeline.CacheCapacity = newCap;
@@ -157,7 +158,12 @@ public class ImageIndexService : IImageIndexService
                         if (meta != null)
                         {
                             meta.SearchText = BuildSearchText(meta);
-                            meta.TokenSet = BuildTokenSet(meta);
+                            meta.TokenSet = BuildFrozenTokenSet(meta);
+
+                            // Remove old index entry for this file from token search index to avoid stale refs
+                            if (_index.TryGetValue(file, out var oldMeta))
+                                _searchIndex.Remove(oldMeta);
+
                             _index[file] = meta;
                             tagBatches.Add(meta.Tags);
                             _searchIndex.Index(meta);
@@ -206,7 +212,7 @@ public class ImageIndexService : IImageIndexService
                     meta.FilePath = Path.GetFullPath(Path.Combine(folder, meta.FilePath));
                 meta.Tags ??= new();
                 meta.SearchText = BuildSearchText(meta);
-                meta.TokenSet = BuildTokenSet(meta);
+                meta.TokenSet = BuildFrozenTokenSet(meta);
                 if (meta.LastWriteTimeTicks == null)
                 {
                     try { meta.LastWriteTimeTicks = new FileInfo(meta.FilePath).LastWriteTimeUtc.Ticks; } catch { }
@@ -281,7 +287,7 @@ public class ImageIndexService : IImageIndexService
             // Expand by prefix/substring matches over token sets if partial requested
             foreach (var m in _index.Values)
             {
-                var set = m.TokenSet ??= BuildTokenSet(m);
+                var set = m.TokenSet ??= BuildFrozenTokenSet(m);
                 foreach (var tok in tokens)
                 {
                     if (set.Any(t => t.Contains(tok, StringComparison.Ordinal))) { candidateSet.Add(m); break; }
@@ -295,7 +301,7 @@ public class ImageIndexService : IImageIndexService
         foreach (var m in candidateSet)
         {
             var hay = m.SearchText ??= BuildSearchText(m);
-            var set = m.TokenSet ??= BuildTokenSet(m);
+            var set = m.TokenSet ??= BuildFrozenTokenSet(m);
             int score = 0, tagHits = 0, tokenHits = 0; bool any = false; bool allMatch = true;
             foreach (var tok in tokens)
             {
@@ -331,6 +337,8 @@ public class ImageIndexService : IImageIndexService
 
     public void RefreshMetadata(ImageMetadata meta)
     {
+        if (meta == null || string.IsNullOrWhiteSpace(meta.FilePath)) return;
+        if (!File.Exists(meta.FilePath)) return; // 방어적 파일 체크로 예외 예방
         if (meta.BasePrompt != null || (meta.CharacterPrompts != null && meta.CharacterPrompts.Count > 0)) return;
         try
         {
@@ -344,7 +352,7 @@ public class ImageIndexService : IImageIndexService
                 if (string.IsNullOrWhiteSpace(meta.NegativePrompt) && !string.IsNullOrWhiteSpace(parsed.NegativePrompt)) meta.NegativePrompt = parsed.NegativePrompt;
                 if (meta.Parameters == null && parsed.Parameters != null) meta.Parameters = parsed.Parameters;
                 meta.SearchText = BuildSearchText(meta);
-                meta.TokenSet = BuildTokenSet(meta);
+                meta.TokenSet = BuildFrozenTokenSet(meta);
                 _searchIndex.Index(meta);
                 _index[meta.FilePath] = meta;
                 InvalidateSorted();
@@ -371,7 +379,7 @@ public class ImageIndexService : IImageIndexService
         return sb.ToString().ToLowerInvariant();
     }
 
-    private static HashSet<string> BuildTokenSet(ImageMetadata m)
+    private static IReadOnlySet<string> BuildFrozenTokenSet(ImageMetadata m)
     {
         var hs = new HashSet<string>(StringComparer.Ordinal);
         void Add(string? text)
@@ -392,20 +400,20 @@ public class ImageIndexService : IImageIndexService
                 Add(cp.Prompt); Add(cp.NegativePrompt);
             }
         }
-        return hs;
+        return System.Collections.Frozen.FrozenSet.ToFrozenSet(hs, StringComparer.Ordinal);
     }
 
     public IEnumerable<string> SuggestTags(string prefix)
     {
         if (string.IsNullOrWhiteSpace(prefix)) return Enumerable.Empty<string>();
-        var trie = _tagTrie.Suggest(prefix, 20);
+        var trie = _tagTrie.Suggest(prefix, AppDefaults.SuggestionLimit);
         if (!trie.Any())
         {
             lock (_tagLock)
             {
                 return _tagSet.Where(t => t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                               .OrderBy(t => t)
-                              .Take(20)
+                              .Take(AppDefaults.SuggestionLimit)
                               .ToList();
             }
         }
@@ -415,11 +423,11 @@ public class ImageIndexService : IImageIndexService
         {
             foreach (var t in _tagSet)
             {
-                if (merged.Count >= 20) break;
+                if (merged.Count >= AppDefaults.SuggestionLimit) break;
                 if (t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) merged.Add(t);
             }
         }
-        return merged.OrderBy(t => t).Take(20).ToList();
+        return merged.OrderBy(t => t).Take(AppDefaults.SuggestionLimit).ToList();
     }
 
     public IReadOnlyList<ImageMetadata> GetSortedByFilePath()

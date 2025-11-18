@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression;
+using System.Linq;
 using System.Text;
+using System.IO.Compression;
+using NAIGallery; // AppDefaults
 
 namespace NAIGallery.Services;
 
@@ -14,8 +16,8 @@ internal static class PngTextChunkReader
 {
     public static IEnumerable<string> ReadRawTextChunks(string file)
     {
-        const int MaxChunkLength = 64 * 1024 * 1024; // 64MB hard cap per chunk to avoid pathological allocations
-        const int MaxTextChunkLength = 4 * 1024 * 1024; // 4MB cap for text payloads
+        const int MaxChunkLength = AppDefaults.PngMaxChunkLength;
+        const int MaxTextChunkLength = AppDefaults.PngMaxTextChunkLength;
         List<string> results = new();
         try
         {

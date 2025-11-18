@@ -10,12 +10,14 @@ using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using NAIGallery; // AppDefaults, Telemetry
 using NAIGallery.Models;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
 using System.Diagnostics.CodeAnalysis; // DynamicDependency for AOT
 using System.Runtime.InteropServices; // COMException
 using System.Diagnostics;
+using System.Threading.Channels;
 
 namespace NAIGallery.Services;
 
@@ -36,6 +38,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     // Error / stats
     private long _ioErrors, _formatErrors, _canceled, _unknownErrors;
+    private long _comUnsupportedFormat, _comOutOfMemory, _comAccessDenied, _comWrongState, _comDeviceLost, _comOther;
 
     private readonly ConcurrentDictionary<string, byte> _inflight = new();
     // Decode concurrency: allow wide parallelism but cap reasonably
@@ -48,12 +51,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     // Pending scheduled (dedup) file->maxWidth per current epoch
     private readonly ConcurrentDictionary<string,int> _pendingScheduled = new(StringComparer.OrdinalIgnoreCase);
 
+    // Apply queue remains concurrent since UI marshals to dispatcher
     private readonly ConcurrentQueue<(ImageMetadata Meta, ImageSource Src, int Width, int Gen)> _applyQ = new();
     private int _applyScheduled; private volatile bool _applySuspended;
 
     private sealed record ThumbReq(ImageMetadata Meta, int Width, bool High, int Epoch);
-    private ConcurrentQueue<ThumbReq> _high = new();
-    private ConcurrentQueue<ThumbReq> _normal = new();
+
+    // Priority channels
+    private readonly Channel<ThumbReq> _chHigh = Channel.CreateBounded<ThumbReq>(new BoundedChannelOptions(1024){ SingleReader = false, SingleWriter = false, FullMode = BoundedChannelFullMode.DropOldest });
+    private readonly Channel<ThumbReq> _chNormal = Channel.CreateBounded<ThumbReq>(new BoundedChannelOptions(4096){ SingleReader = false, SingleWriter = false, FullMode = BoundedChannelFullMode.DropOldest });
+    private int _highBacklog = 0, _normalBacklog = 0;
+
     private readonly CancellationTokenSource _schedCts = new();
     private int _activeWorkers = 0;
     private volatile int _epoch = 0;
@@ -109,7 +117,6 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     public void UpdateViewport(IReadOnlyList<ImageMetadata> orderedVisible, IReadOnlyList<ImageMetadata> bufferItems, int width)
     {
         int newEpoch = Interlocked.Increment(ref _epoch);
-        _high = new ConcurrentQueue<ThumbReq>(); _normal = new ConcurrentQueue<ThumbReq>();
         _pendingScheduled.Clear();
         foreach (var m in orderedVisible) InternalEnqueue(m, width, true, newEpoch, force:true);
         foreach (var m in bufferItems) InternalEnqueue(m, width, false, newEpoch);
@@ -118,7 +125,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private void InternalEnqueue(ImageMetadata meta, int width, bool high, int epoch, bool force=false)
     {
-        if (meta.FilePath == null) return;
+        if (meta?.FilePath == null) return;
+        if (!File.Exists(meta.FilePath)) return; // 파일 존재 확인으로 NRE/IO 예외 방어
         int existing = meta.ThumbnailPixelWidth ?? 0;
         if(!force && existing >= width) return;
         // Dedup across queues
@@ -126,13 +134,16 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         int pendingWidth = _pendingScheduled[meta.FilePath];
         if(width < pendingWidth && !force) return; // superseded by larger already
         var req = new ThumbReq(meta, pendingWidth, high, epoch);
-        if (high) _high.Enqueue(req); else _normal.Enqueue(req);
+        if (high)
+        { if(_chHigh.Writer.TryWrite(req)) Interlocked.Increment(ref _highBacklog); }
+        else
+        { if(_chNormal.Writer.TryWrite(req)) Interlocked.Increment(ref _normalBacklog); }
         UpdateWorkerTarget();
     }
 
     private void UpdateWorkerTarget()
     {
-        int backlog = _high.Count + _normal.Count;
+        int backlog = Math.Max(0, Volatile.Read(ref _highBacklog)) + Math.Max(0, Volatile.Read(ref _normalBacklog));
         int cpu = Math.Max(2, Environment.ProcessorCount);
         int ideal;
         if (backlog <= 4) ideal = Math.Min(cpu, 4);
@@ -154,7 +165,30 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private void EnsureWorkers()
     {
         while (!_schedCts.IsCancellationRequested)
-        { int cur = _activeWorkers; if (cur >= _targetWorkers) break; if (Interlocked.CompareExchange(ref _activeWorkers, cur+1, cur) == cur) _ = Task.Run(WorkerLoopAsync); }
+        {
+            int cur = _activeWorkers; if (cur >= _targetWorkers) break;
+            if (Interlocked.CompareExchange(ref _activeWorkers, cur + 1, cur) == cur)
+            {
+                _ = Task.Run(WorkerLoopAsync);
+            }
+        }
+    }
+
+    private async Task<ThumbReq?> TryDequeueAsync(CancellationToken token)
+    {
+        // Prefer high priority immediate read
+        if (_chHigh.Reader.TryRead(out var h)) { Interlocked.Decrement(ref _highBacklog); return h; }
+        if (_chNormal.Reader.TryRead(out var n)) { Interlocked.Decrement(ref _normalBacklog); return n; }
+        // Await availability on either channel
+        var highAvail = _chHigh.Reader.WaitToReadAsync(token).AsTask();
+        var normAvail = _chNormal.Reader.WaitToReadAsync(token).AsTask();
+        var completed = await Task.WhenAny(highAvail, normAvail).ConfigureAwait(false);
+        if (completed.Result)
+        {
+            if (_chHigh.Reader.TryRead(out h)) { Interlocked.Decrement(ref _highBacklog); return h; }
+            if (_chNormal.Reader.TryRead(out n)) { Interlocked.Decrement(ref _normalBacklog); return n; }
+        }
+        return null;
     }
 
     private async Task WorkerLoopAsync()
@@ -167,17 +201,19 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         {
             while(!token.IsCancellationRequested)
             {
-                if(!_high.TryDequeue(out var req) && !_normal.TryDequeue(out req))
-                { await Task.Delay(30, token).ConfigureAwait(false); if(_high.IsEmpty && _normal.IsEmpty && _activeWorkers>1) break; continue; }
-                if(req.Epoch < _epoch) continue; if((req.Meta.ThumbnailPixelWidth ?? 0) >= req.Width) continue;
-                try { await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); } catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); }
+                var reqObj = await TryDequeueAsync(token).ConfigureAwait(false);
+                if(reqObj is null)
+                { if(_activeWorkers>1) break; continue; }
+                var req = reqObj;
+                if(req!.Epoch < _epoch) continue; if((req.Meta.ThumbnailPixelWidth ?? 0) >= req.Width) continue;
+                try { await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); } catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
                 // Cooperatively yield to keep UI responsive
                 await Task.Yield();
             }
         }
         catch(OperationCanceledException) { }
         finally
-        { Interlocked.Decrement(ref _activeWorkers); if(!_schedCts.IsCancellationRequested && (!_high.IsEmpty || !_normal.IsEmpty)) EnsureWorkers(); }
+        { Interlocked.Decrement(ref _activeWorkers); if(!_schedCts.IsCancellationRequested && (Volatile.Read(ref _highBacklog)>0 || Volatile.Read(ref _normalBacklog)>0)) EnsureWorkers(); }
     }
 
     public async Task EnsureThumbnailAsync(ImageMetadata meta, int decodeWidth, CancellationToken ct, bool allowDownscale)
@@ -185,6 +221,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         try
         {
             if(_dispatcher==null || ct.IsCancellationRequested) return;
+            if(meta?.FilePath == null) return;
             if(!File.Exists(meta.FilePath)) return; long ticks = SafeGetTicks(meta.FilePath); if(ticks==0) return;
             int maxReq = _maxRequested.AddOrUpdate(meta.FilePath, decodeWidth, (_,old)=> decodeWidth>old?decodeWidth:old);
             if(decodeWidth < maxReq) decodeWidth = maxReq;
@@ -200,7 +237,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 _decodeInProgressMax.TryGetValue(meta.FilePath,out var cur); if(cur==decodeWidth) _decodeInProgressMax.TryRemove(meta.FilePath,out _);
                 return;
             }
-            int small = Math.Clamp(decodeWidth/2,96,160);
+            int small = Math.Clamp(decodeWidth/2, AppDefaults.SmallThumbMin, AppDefaults.SmallThumbMax);
             if(!allowDownscale && current==0 && decodeWidth>small)
             {
                 int smallMarker = _decodeInProgressMax.AddOrUpdate(meta.FilePath, small, (_,old)=> old>small? old: small);
@@ -211,7 +248,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             await LoadDecodeAsync(meta, decodeWidth, ticks, ct, mainGen, allowDownscale).ConfigureAwait(false);
             _decodeInProgressMax.TryGetValue(meta.FilePath,out var final); if(final==decodeWidth) _decodeInProgressMax.TryRemove(meta.FilePath,out _);
         }
-        catch(OperationCanceledException){ Interlocked.Increment(ref _canceled); }
+        catch(OperationCanceledException){ Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
     }
 
     public async Task PreloadAsync(IEnumerable<ImageMetadata> items, int decodeWidth, CancellationToken ct, int maxParallelism)
@@ -243,26 +280,48 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 using var fs = File.Open(meta.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using IRandomAccessStream ras = fs.AsRandomAccessStream();
                 var sb = await DecodeAsync(ras, width, ct).ConfigureAwait(false);
-                if(sb==null || ct.IsCancellationRequested){ if(ct.IsCancellationRequested) Interlocked.Increment(ref _canceled); else Interlocked.Increment(ref _formatErrors); return; }
+                if(sb==null || ct.IsCancellationRequested){ if(ct.IsCancellationRequested) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1);} else { Interlocked.Increment(ref _formatErrors); Telemetry.DecodeFormatErrors.Add(1);} return; }
                 int pxCount = (int)(sb.PixelWidth * sb.PixelHeight * 4);
                 var rented = ArrayPool<byte>.Shared.Rent(pxCount);
                 try { sb.CopyToBuffer(rented.AsBuffer()); }
-                catch { ArrayPool<byte>.Shared.Return(rented); Interlocked.Increment(ref _formatErrors); return; }
+                catch { ArrayPool<byte>.Shared.Return(rented); Interlocked.Increment(ref _formatErrors); Telemetry.DecodeFormatErrors.Add(1); return; }
                 var entry = new PixelEntry{ Pixels = rented, W = (int)sb.PixelWidth, H = (int)sb.PixelHeight, Rented = rented.Length};
                 try { sb.Dispose(); } catch {}
                 AddEntry(key, entry);
                 await CreateAndQueueApplyAsync(meta, entry, width, gen, allowDownscale).ConfigureAwait(false);
             }
-            catch (IOException) { Interlocked.Increment(ref _ioErrors); }
-            catch (UnauthorizedAccessException) { Interlocked.Increment(ref _ioErrors); }
-            catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); }
-            catch (COMException) { Interlocked.Increment(ref _unknownErrors); }
-            catch (Exception ex) { Interlocked.Increment(ref _unknownErrors); if(_logger!=null) _logger.LogDebug(ex, "Decode error {File}", meta.FilePath); }
+            catch (IOException) { Interlocked.Increment(ref _ioErrors); Telemetry.DecodeIoErrors.Add(1); }
+            catch (UnauthorizedAccessException) { Interlocked.Increment(ref _ioErrors); Telemetry.DecodeIoErrors.Add(1); }
+            catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
+            catch (COMException comEx)
+            {
+                // Categorize common HRESULTs for better diagnostics
+                switch ((uint)comEx.HResult)
+                {
+                    case 0x88982F50: // WINCODEC_ERR_UNKNOWNIMAGEFORMAT
+                    case 0x88982F44: // WINCODEC_ERR_COMPONENTNOTFOUND
+                        Interlocked.Increment(ref _comUnsupportedFormat); Telemetry.ComUnsupportedFormat.Add(1); break;
+                    case 0x8007000E: // E_OUTOFMEMORY
+                    case 0x88982F07: // WINCODEC_ERR_INSUFFICIENTBUFFER
+                        Interlocked.Increment(ref _comOutOfMemory); Telemetry.ComOutOfMemory.Add(1); break;
+                    case 0x80070005: // E_ACCESSDENIED
+                        Interlocked.Increment(ref _comAccessDenied); Telemetry.ComAccessDenied.Add(1); break;
+                    case 0x88982F81: // WRONGSTATE (representative)
+                        Interlocked.Increment(ref _comWrongState); Telemetry.ComWrongState.Add(1); break;
+                    case 0x887A0005: // DXGI_ERROR_DEVICE_REMOVED
+                    case 0x887A0006: // DXGI_ERROR_DEVICE_HUNG
+                        Interlocked.Increment(ref _comDeviceLost); Telemetry.ComDeviceLost.Add(1); break;
+                    default:
+                        Interlocked.Increment(ref _comOther); Telemetry.ComOther.Add(1); break;
+                }
+                _logger?.LogDebug(comEx, "COM decode error {HResult:X8} {File}", comEx.HResult, meta.FilePath);
+            }
+            catch (Exception ex) { Interlocked.Increment(ref _unknownErrors); Telemetry.DecodeUnknownErrors.Add(1); if(_logger!=null) _logger.LogDebug(ex, "Decode error {File}", meta.FilePath); }
             finally { _decodeGate.Release(); }
         }
         finally
         {
-            sw.Stop();
+            sw.Stop(); Telemetry.DecodeLatencyMs.Record(sw.Elapsed.TotalMilliseconds);
             _inflight.TryRemove(key,out _);
         }
     }
@@ -344,7 +403,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 while(!_applySuspended && _applyQ.TryDequeue(out var item))
                 {
                     TryApply(item.Meta,item.Src,item.Width,item.Gen,false);
-                    processed++; if(processed>=12){ processed=0; await Task.Yield(); }
+                    processed++; if(processed>=AppDefaults.DrainBatch){ processed=0; await Task.Yield(); }
                 }
             }
             finally { Interlocked.Exchange(ref _applyScheduled,0); if(!_applySuspended && !_applyQ.IsEmpty) ScheduleDrain(); }
@@ -395,14 +454,14 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                     double ms = (Stopwatch.GetTimestamp() - stamp) * 1000.0 / Stopwatch.Frequency;
                     // EMA smoothing
                     _uiLagMs = _uiLagMs <= 0 ? ms : (_uiLagMs * 0.85 + ms * 0.15);
-                    bool busy = ms > 40 || _uiLagMs > 25;
+                    bool busy = ms > AppDefaults.UiLagBusyThresholdMs || _uiLagMs > AppDefaults.UiLagEmaBusyThresholdMs;
                     if (busy != _uiBusy)
                     {
                         _uiBusy = busy;
                         UpdateWorkerTarget();
                     }
                 });
-            }, null, dueTime: 0, period: 250);
+            }, null, dueTime: 0, period: AppDefaults.UiPulsePeriodMs);
         }
         catch { }
     }

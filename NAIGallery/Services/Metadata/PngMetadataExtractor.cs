@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
 
 namespace NAIGallery.Services.Metadata;
@@ -13,67 +14,67 @@ namespace NAIGallery.Services.Metadata;
 /// </summary>
 internal sealed class PngMetadataExtractor : IMetadataExtractor
 {
+    private readonly ILogger<PngMetadataExtractor>? _logger;
+    public PngMetadataExtractor(ILogger<PngMetadataExtractor>? logger = null) => _logger = logger;
+
     public ImageMetadata? Extract(string file, string rootFolder)
     {
         try { if (!File.Exists(file)) return null; } catch { return null; }
+
+        var collected = CollectTextChunks(file);
+        if (collected.Count == 0) return null;
+
+        ParseCollected(collected, out var prompt, out var negative, out var basePrompt,
+                        out var baseNegative, out var characterPrompts, out var parameters);
+
+        FinalizeCharacterPrompts(characterPrompts);
+
+        var tags = BuildTags(basePrompt, characterPrompts, prompt);
+        var fi = new FileInfo(file);
+        return new ImageMetadata
+        {
+            FilePath = file,
+            RelativePath = Path.GetRelativePath(rootFolder, file),
+            Prompt = CleanSegment(prompt),
+            NegativePrompt = CleanSegment(negative),
+            BasePrompt = CleanSegment(basePrompt),
+            BaseNegativePrompt = CleanSegment(baseNegative),
+            CharacterPrompts = characterPrompts,
+            Parameters = parameters.Count > 0 ? parameters : null,
+            Tags = tags,
+            LastWriteTimeTicks = fi.LastWriteTimeUtc.Ticks
+        };
+    }
+
+    private static HashSet<string> CollectTextChunks(string file)
+    {
         var collected = new HashSet<string>(StringComparer.Ordinal);
         try
         {
             foreach (var raw in PngTextChunkReader.ReadRawTextChunks(file))
                 if (!string.IsNullOrWhiteSpace(raw)) collected.Add(raw.Trim());
         }
-        catch { return null; }
+        catch { }
+        return collected;
+    }
 
-        string? prompt = null, negative = null, basePrompt = null, baseNegative = null;
-        List<CharacterPrompt>? characterPrompts = null; List<string?>? charNegatives = null;
-        var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private static void ParseCollected(HashSet<string> collected, out string? prompt, out string? negative,
+        out string? basePrompt, out string? baseNegative, out List<CharacterPrompt>? characterPrompts, out Dictionary<string, string> parameters)
+    {
+        prompt = null; negative = null; basePrompt = null; baseNegative = null; characterPrompts = null; parameters = new(StringComparer.OrdinalIgnoreCase);
+        List<string?>? charNegatives = null;
 
         foreach (var e in collected)
         {
             if (e.StartsWith('{'))
             {
-                try
-                {
-                    using var doc = JsonDocument.Parse(e);
-                    var root = doc.RootElement;
-                    if (root.ValueKind == JsonValueKind.Object)
-                    {
-                        ParseV4(root, ref basePrompt, ref baseNegative, ref characterPrompts, ref charNegatives);
-                        if (root.TryGetProperty("prompt", out var pProp)) prompt ??= pProp.GetString();
-                        if (root.TryGetProperty("negative_prompt", out var npProp)) negative ??= npProp.GetString();
-                        if (root.TryGetProperty("uc", out var ucProp)) negative ??= ucProp.GetString();
-                        foreach (var prop in root.EnumerateObject())
-                        {
-                            if (prop.NameEquals("prompt") || prop.NameEquals("negative_prompt") || prop.NameEquals("uc") ||
-                                prop.NameEquals("base_prompt") || prop.NameEquals("negative_base_prompt") ||
-                                prop.NameEquals("character_prompts") || prop.NameEquals("v4_prompt") || prop.NameEquals("v4_negative_prompt")) continue;
-                            parameters[prop.Name] = prop.Value.ToString();
-                        }
-                        continue;
-                    }
-                }
-                catch { }
+                TryParseJsonChunk(e, ref basePrompt, ref baseNegative, ref characterPrompts, ref charNegatives, ref prompt, ref negative, parameters);
+                continue;
             }
-            if (e.Contains("Negative prompt:", StringComparison.OrdinalIgnoreCase))
-            {
-                var lines = e.Replace("\r", string.Empty).Split('\n');
-                if (lines.Length > 0 && string.IsNullOrEmpty(prompt)) prompt = lines[0];
-                foreach (var line in lines)
-                {
-                    if (line.StartsWith("Negative prompt:", StringComparison.OrdinalIgnoreCase))
-                        negative = line["Negative prompt:".Length..].Trim();
-                    if (line.Contains(':' ) && line.Contains(',') && line.IndexOf(':') < line.IndexOf(','))
-                    {
-                        foreach (var seg in line.Split(',', StringSplitOptions.RemoveEmptyEntries))
-                        {
-                            var kv = seg.Split(':', 2);
-                            if (kv.Length == 2) parameters[kv[0].Trim()] = kv[1].Trim();
-                        }
-                    }
-                }
-            }
+            TryParseLegacyTextChunk(e, ref prompt, ref negative, parameters);
         }
 
+        // Merge char negatives captured from v4 negative structure
         if (charNegatives != null && characterPrompts != null)
         {
             for (int i = 0; i < characterPrompts.Count && i < charNegatives.Count; i++)
@@ -86,36 +87,65 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
                 }
             }
         }
+    }
 
-        prompt = CleanSegment(prompt); negative = CleanSegment(negative);
-        basePrompt = CleanSegment(basePrompt); baseNegative = CleanSegment(baseNegative);
-        if (characterPrompts != null)
+    private static void TryParseJsonChunk(string json, ref string? basePrompt, ref string? baseNegative,
+        ref List<CharacterPrompt>? characterPrompts, ref List<string?>? charNegatives, ref string? prompt, ref string? negative,
+        Dictionary<string, string> parameters)
+    {
+        try
         {
-            int idx = 1;
-            foreach (var cp in characterPrompts)
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
+
+            ParseV4(root, ref basePrompt, ref baseNegative, ref characterPrompts, ref charNegatives);
+            if (root.TryGetProperty("prompt", out var pProp)) prompt ??= pProp.GetString();
+            if (root.TryGetProperty("negative_prompt", out var npProp)) negative ??= npProp.GetString();
+            if (root.TryGetProperty("uc", out var ucProp)) negative ??= ucProp.GetString();
+
+            foreach (var prop in root.EnumerateObject())
             {
-                cp.Prompt = CleanSegment(cp.Prompt);
-                cp.NegativePrompt = CleanSegment(cp.NegativePrompt);
-                if (string.IsNullOrWhiteSpace(cp.Name)) cp.Name = $"Character {idx}";
-                idx++;
+                if (prop.NameEquals("prompt") || prop.NameEquals("negative_prompt") || prop.NameEquals("uc") ||
+                    prop.NameEquals("base_prompt") || prop.NameEquals("negative_base_prompt") ||
+                    prop.NameEquals("character_prompts") || prop.NameEquals("v4_prompt") || prop.NameEquals("v4_negative_prompt")) continue;
+                parameters[prop.Name] = prop.Value.ToString();
             }
         }
+        catch { }
+    }
 
-        var tags = BuildTags(basePrompt, characterPrompts, prompt);
-        var fi = new FileInfo(file);
-        return new ImageMetadata
+    private static void TryParseLegacyTextChunk(string e, ref string? prompt, ref string? negative, Dictionary<string, string> parameters)
+    {
+        if (!e.Contains("Negative prompt:", StringComparison.OrdinalIgnoreCase)) return;
+        var lines = e.Replace("\r", string.Empty).Split('\n');
+        if (lines.Length > 0 && string.IsNullOrEmpty(prompt)) prompt = lines[0];
+        foreach (var line in lines)
         {
-            FilePath = file,
-            RelativePath = Path.GetRelativePath(rootFolder, file),
-            Prompt = prompt,
-            NegativePrompt = negative,
-            BasePrompt = basePrompt,
-            BaseNegativePrompt = baseNegative,
-            CharacterPrompts = characterPrompts,
-            Parameters = parameters.Count > 0 ? parameters : null,
-            Tags = tags,
-            LastWriteTimeTicks = fi.LastWriteTimeUtc.Ticks
-        };
+            if (line.StartsWith("Negative prompt:", StringComparison.OrdinalIgnoreCase))
+                negative = line["Negative prompt:".Length..].Trim();
+            if (line.Contains(':') && line.Contains(',') && line.IndexOf(':') < line.IndexOf(','))
+            {
+                foreach (var seg in line.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = seg.Split(':', 2);
+                    if (kv.Length == 2) parameters[kv[0].Trim()] = kv[1].Trim();
+                }
+            }
+        }
+    }
+
+    private static void FinalizeCharacterPrompts(List<CharacterPrompt>? characterPrompts)
+    {
+        if (characterPrompts == null) return;
+        int idx = 1;
+        foreach (var cp in characterPrompts)
+        {
+            cp.Prompt = CleanSegment(cp.Prompt);
+            cp.NegativePrompt = CleanSegment(cp.NegativePrompt);
+            if (string.IsNullOrWhiteSpace(cp.Name)) cp.Name = $"Character {idx}";
+            idx++;
+        }
     }
 
     private static void ParseV4(JsonElement root, ref string? basePrompt, ref string? baseNegative,

@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CommunityToolkit.WinUI.Collections; // AdvancedCollectionView
 
 namespace NAIGallery.ViewModels;
 
@@ -65,9 +66,13 @@ public partial class GalleryViewModel : ObservableObject
     }
 
     private CancellationTokenSource? _searchCts; // debounce token
-    private List<ImageMetadata> _lastSearchResult = new();
+    private List<ImageMetadata> _lastSearch = new();
 
+    // Backing source (kept for compatibility with existing view code)
     public ObservableCollection<ImageMetadata> Images { get; } = new();
+    // Optional view (for future use or consumers that prefer ACV APIs)
+    public AdvancedCollectionView ImagesView { get; }
+
     public ObservableCollection<string> TagSuggestions { get; } = new();
 
     public event EventHandler? ImagesChanged;
@@ -75,6 +80,8 @@ public partial class GalleryViewModel : ObservableObject
     public GalleryViewModel(IImageIndexService service)
     {
         _indexService = service;
+        ImagesView = new AdvancedCollectionView(Images, false);
+        ApplySortToView();
         _ = ApplySearchAsync();
     }
 
@@ -86,8 +93,25 @@ public partial class GalleryViewModel : ObservableObject
         UpdateSuggestions();
     }
 
-    partial void OnSortFieldChanged(GallerySortField value) => ApplySortOnly();
-    partial void OnSortDirectionChanged(GallerySortDirection value) => ApplySortOnly();
+    partial void OnSortFieldChanged(GallerySortField value) => ApplySortToView();
+    partial void OnSortDirectionChanged(GallerySortDirection value) => ApplySortToView();
+
+    private void ApplySortToView()
+    {
+        if (ImagesView == null) return;
+        ImagesView.SortDescriptions.Clear();
+        var dir = _sortDirection == GallerySortDirection.Asc ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
+        switch (_sortField)
+        {
+            case GallerySortField.Date:
+                ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.LastWriteTimeTicks), dir));
+                break;
+            default:
+                ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.FilePath), dir));
+                break;
+        }
+        ImagesView.RefreshSorting();
+    }
 
     public async Task IndexFolderAsync(string? folder)
     {
@@ -120,10 +144,11 @@ public partial class GalleryViewModel : ObservableObject
 
     private void ApplySortOnly()
     {
-        if (_lastSearchResult.Count == 0) return;
-        var sorted = Sort(_lastSearchResult).ToList();
+        if (_lastSearch.Count == 0) return;
+        var sorted = Sort(_lastSearch).ToList();
         Images.Clear();
         foreach (var m in sorted) Images.Add(m);
+        ImagesView.RefreshSorting();
         ImagesChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -137,11 +162,12 @@ public partial class GalleryViewModel : ObservableObject
             if (throttle)
                 await Task.Delay(250, cts.Token);
             var results = _indexService.Search(_searchQuery, _searchAndMode, _searchPartialMode).ToList();
-            _lastSearchResult = results;
+            _lastSearch = results;
             if (cts.IsCancellationRequested) return;
             var sorted = Sort(results).ToList();
             Images.Clear();
             foreach (var m in sorted) Images.Add(m);
+            ImagesView.RefreshSorting();
             ImagesChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (TaskCanceledException) { }

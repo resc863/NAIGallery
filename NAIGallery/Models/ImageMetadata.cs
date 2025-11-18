@@ -47,7 +47,7 @@ public class ImageMetadata : INotifyPropertyChanged
 
     /// <summary>Precomputed tokens for fast search matching (lower-cased). Not serialized.</summary>
     [JsonIgnore]
-    public HashSet<string>? TokenSet { get; set; }
+    public IReadOnlySet<string>? TokenSet { get; set; }
 
     /// <summary>UTC last write time ticks used for date sorting.</summary>
     public long? LastWriteTimeTicks { get; set; }
