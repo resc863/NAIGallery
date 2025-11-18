@@ -93,8 +93,17 @@ public partial class GalleryViewModel : ObservableObject
         UpdateSuggestions();
     }
 
-    partial void OnSortFieldChanged(GallerySortField value) => ApplySortToView();
-    partial void OnSortDirectionChanged(GallerySortDirection value) => ApplySortToView();
+    partial void OnSortFieldChanged(GallerySortField value)
+    {
+        ApplySortToView();
+        ApplySortOnly();
+    }
+
+    partial void OnSortDirectionChanged(GallerySortDirection value)
+    {
+        ApplySortToView();
+        ApplySortOnly();
+    }
 
     private void ApplySortToView()
     {

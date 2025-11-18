@@ -205,7 +205,16 @@ public sealed partial class GalleryPage : Page
 
     private void SortDirectionToggle_Click(object sender, RoutedEventArgs e)
     {
+        if (ViewModel == null) return; // Add null check
+
         ViewModel.SortDirection = ViewModel.SortDirection == GallerySortDirection.Asc ? GallerySortDirection.Desc : GallerySortDirection.Asc;
+
+        // Update button text to show current direction
+        if (SortDirText != null)
+        {
+            SortDirText.Text = ViewModel.SortDirection == GallerySortDirection.Asc ? "ก่" : "ก้";
+        }
+
         _initialPrimed = false;
         _ = PrimeInitialAsync();
     }
@@ -213,9 +222,12 @@ public sealed partial class GalleryPage : Page
     private void SortFieldCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (sender is not ComboBox combo || combo.SelectedItem is not ComboBoxItem item) return;
+        if (ViewModel == null) return; // Add null check
+        
         var tag = item.Tag as string;
         if (tag == "Name") ViewModel.SortField = GallerySortField.Name;
         else if (tag == "Date") ViewModel.SortField = GallerySortField.Date;
+        
         _initialPrimed = false;
         _ = PrimeInitialAsync();
     }
