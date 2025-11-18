@@ -193,8 +193,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private async Task WorkerLoopAsync()
     {
-        // Lower worker thread priority to avoid preempting UI
-        try { Thread.CurrentThread.Priority = ThreadPriority.BelowNormal; } catch { }
+        // Lower worker thread priority to avoid preempting UI - use Lowest instead of BelowNormal
+        try { Thread.CurrentThread.Priority = ThreadPriority.Lowest; } catch { }
 
         var token = _schedCts.Token;
         try
@@ -206,9 +206,21 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 { if(_activeWorkers>1) break; continue; }
                 var req = reqObj;
                 if(req!.Epoch < _epoch) continue; if((req.Meta.ThumbnailPixelWidth ?? 0) >= req.Width) continue;
-                try { await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); } catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
-                // Cooperatively yield to keep UI responsive
-                await Task.Yield();
+                try 
+                { 
+                    await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); 
+                    
+                    // More aggressive yielding when UI is busy
+                    if (_uiBusy)
+                    {
+                        await Task.Delay(5, token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await Task.Yield();
+                    }
+                } 
+                catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
             }
         }
         catch(OperationCanceledException) { }
@@ -257,13 +269,40 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         if(maxParallelism<=0)
         {
             int cpu = Math.Max(1,Environment.ProcessorCount-1);
-            int reserve = _uiBusy ? Math.Max(1, cpu/2) : Math.Max(1, cpu/4);
+            // Reserve more cores for UI when busy
+            int reserve = _uiBusy ? Math.Max(2, cpu/2) : Math.Max(1, cpu/4);
             int effective = Math.Max(1, cpu - reserve);
-            maxParallelism = Math.Clamp(effective, 2, _uiBusy ? 8 : 24);
+            // More conservative parallelism when UI is busy
+            maxParallelism = Math.Clamp(effective, 1, _uiBusy ? 4 : 16);
         }
-        if(maxParallelism<=1){ foreach(var m in items){ if(ct.IsCancellationRequested) break; await EnsureThumbnailAsync(m, decodeWidth, ct, false).ConfigureAwait(false);} return; }
-        var po = new ParallelOptions{ MaxDegreeOfParallelism = maxParallelism, CancellationToken = ct};
-        await Parallel.ForEachAsync(items, po, async (m, token)=> await EnsureThumbnailAsync(m, decodeWidth, token, false).ConfigureAwait(false));
+        if(maxParallelism<=1)
+        { 
+            foreach(var m in items)
+            { 
+                if(ct.IsCancellationRequested) break; 
+                await EnsureThumbnailAsync(m, decodeWidth, ct, false).ConfigureAwait(false);
+                
+                // Yield between items when UI is busy
+                if (_uiBusy)
+                    await Task.Delay(10, ct).ConfigureAwait(false);
+            } 
+            return; 
+        }
+        var po = new ParallelOptions
+        { 
+            MaxDegreeOfParallelism = maxParallelism, 
+            CancellationToken = ct,
+            // Lower task priority when UI is busy
+            TaskScheduler = TaskScheduler.Default
+        };
+        await Parallel.ForEachAsync(items, po, async (m, token)=>
+        {
+            await EnsureThumbnailAsync(m, decodeWidth, token, false).ConfigureAwait(false);
+            
+            // Cooperative yielding in parallel loops when UI is busy
+            if (_uiBusy)
+                await Task.Delay(5, token).ConfigureAwait(false);
+        });
     }
 
     private async Task LoadDecodeAsync(ImageMetadata meta, int width, long ticks, CancellationToken ct, int gen, bool allowDownscale)
@@ -277,6 +316,12 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             await _decodeGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
+                // Yield before heavy I/O to allow UI thread to process pending work
+                if (_uiBusy)
+                {
+                    await Task.Delay(10, ct).ConfigureAwait(false);
+                }
+                
                 using var fs = File.Open(meta.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using IRandomAccessStream ras = fs.AsRandomAccessStream();
                 var sb = await DecodeAsync(ras, width, ct).ConfigureAwait(false);
@@ -288,6 +333,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 var entry = new PixelEntry{ Pixels = rented, W = (int)sb.PixelWidth, H = (int)sb.PixelHeight, Rented = rented.Length};
                 try { sb.Dispose(); } catch {}
                 AddEntry(key, entry);
+                
+                // Another yield before UI marshaling when busy
+                if (_uiBusy)
+                {
+                    await Task.Delay(5, ct).ConfigureAwait(false);
+                }
+                
                 await CreateAndQueueApplyAsync(meta, entry, width, gen, allowDownscale).ConfigureAwait(false);
             }
             catch (IOException) { Interlocked.Increment(ref _ioErrors); Telemetry.DecodeIoErrors.Add(1); }
@@ -356,12 +408,23 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private async Task CreateAndQueueApplyAsync(ImageMetadata meta, PixelEntry entry, int width, int gen, bool allowDownscale)
     {
-        if(_dispatcher==null) return; var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if(_dispatcher==null) return; 
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        
         if(!_dispatcher.TryEnqueue(DispatcherQueuePriority.Low, async () =>
         {
             try
             {
-                await _uiGate.WaitAsync();
+                // Add timeout to prevent indefinite blocking on UI thread
+                bool acquired = await _uiGate.WaitAsync(millisecondsTimeout: 1000);
+                if (!acquired)
+                {
+                    // If can't acquire in 1 second, re-queue for later
+                    EnqueueApply(meta, null!, width, gen, allowDownscale);
+                    tcs.TrySetResult(false);
+                    return;
+                }
+                
                 try
                 {
                     var wb = new WriteableBitmap(entry.W, entry.H);
@@ -390,23 +453,52 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     }
 
     private void EnqueueApply(ImageMetadata meta, ImageSource src, int width, int gen, bool allowDownscale)
-    { int latest = _fileGeneration.TryGetValue(meta.FilePath, out var g) ? g : gen; if(gen < latest && !allowDownscale) return; _applyQ.Enqueue((meta,src,width,gen)); ScheduleDrain(); }
+    { 
+        int latest = _fileGeneration.TryGetValue(meta.FilePath, out var g) ? g : gen; 
+        if(gen < latest && !allowDownscale) return; 
+        
+        // Skip enqueuing if src is null (timeout case)
+        if (src == null) return;
+        
+        _applyQ.Enqueue((meta,src,width,gen)); 
+        ScheduleDrain(); 
+    }
 
     private void ScheduleDrain()
     {
-        if(_dispatcher==null || _applySuspended) return; if(Interlocked.Exchange(ref _applyScheduled,1)!=0) return;
+        if(_dispatcher==null || _applySuspended) return; 
+        if(Interlocked.Exchange(ref _applyScheduled,1)!=0) return;
+        
         _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, async () =>
         {
             try
             {
-                await Task.Yield(); int processed=0;
+                await Task.Yield(); 
+                int processed=0;
+                // Reduce batch size when UI is busy
+                int batchSize = _uiBusy ? Math.Max(2, AppDefaults.DrainBatch / 3) : AppDefaults.DrainBatch;
+                
                 while(!_applySuspended && _applyQ.TryDequeue(out var item))
                 {
                     TryApply(item.Meta,item.Src,item.Width,item.Gen,false);
-                    processed++; if(processed>=AppDefaults.DrainBatch){ processed=0; await Task.Yield(); }
+                    processed++;
+                    
+                    if(processed >= batchSize)
+                    { 
+                        processed=0; 
+                        // More aggressive yielding when busy
+                        if (_uiBusy)
+                            await Task.Delay(5);
+                        else
+                            await Task.Yield(); 
+                    }
                 }
             }
-            finally { Interlocked.Exchange(ref _applyScheduled,0); if(!_applySuspended && !_applyQ.IsEmpty) ScheduleDrain(); }
+            finally 
+            { 
+                Interlocked.Exchange(ref _applyScheduled,0); 
+                if(!_applySuspended && !_applyQ.IsEmpty) ScheduleDrain(); 
+            }
         });
     }
 
