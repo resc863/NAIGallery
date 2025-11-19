@@ -193,8 +193,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private async Task WorkerLoopAsync()
     {
-        // Lower worker thread priority to avoid preempting UI - use Lowest instead of BelowNormal
-        try { Thread.CurrentThread.Priority = ThreadPriority.Lowest; } catch { }
+        // Use BelowNormal instead of Lowest for better balance
+        try { Thread.CurrentThread.Priority = ThreadPriority.BelowNormal; } catch { }
 
         var token = _schedCts.Token;
         try
@@ -210,10 +210,10 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 { 
                     await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); 
                     
-                    // More aggressive yielding when UI is busy
+                    // Reduced yielding time when UI is busy
                     if (_uiBusy)
                     {
-                        await Task.Delay(5, token).ConfigureAwait(false);
+                        await Task.Delay(2, token).ConfigureAwait(false);
                     }
                     else
                     {
@@ -269,11 +269,11 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         if(maxParallelism<=0)
         {
             int cpu = Math.Max(1,Environment.ProcessorCount-1);
-            // Reserve more cores for UI when busy
-            int reserve = _uiBusy ? Math.Max(2, cpu/2) : Math.Max(1, cpu/4);
+            // Reduced reserve for better throughput
+            int reserve = _uiBusy ? Math.Max(1, cpu/3) : Math.Max(1, cpu/4);
             int effective = Math.Max(1, cpu - reserve);
-            // More conservative parallelism when UI is busy
-            maxParallelism = Math.Clamp(effective, 1, _uiBusy ? 4 : 16);
+            // Increased parallelism limit for better performance
+            maxParallelism = Math.Clamp(effective, 1, _uiBusy ? 6 : 16);
         }
         if(maxParallelism<=1)
         { 
@@ -282,9 +282,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 if(ct.IsCancellationRequested) break; 
                 await EnsureThumbnailAsync(m, decodeWidth, ct, false).ConfigureAwait(false);
                 
-                // Yield between items when UI is busy
+                // Reduced yield between items
                 if (_uiBusy)
-                    await Task.Delay(10, ct).ConfigureAwait(false);
+                    await Task.Delay(5, ct).ConfigureAwait(false);
             } 
             return; 
         }
@@ -292,16 +292,15 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         { 
             MaxDegreeOfParallelism = maxParallelism, 
             CancellationToken = ct,
-            // Lower task priority when UI is busy
             TaskScheduler = TaskScheduler.Default
         };
         await Parallel.ForEachAsync(items, po, async (m, token)=>
         {
             await EnsureThumbnailAsync(m, decodeWidth, token, false).ConfigureAwait(false);
             
-            // Cooperative yielding in parallel loops when UI is busy
+            // Reduced cooperative yielding
             if (_uiBusy)
-                await Task.Delay(5, token).ConfigureAwait(false);
+                await Task.Delay(2, token).ConfigureAwait(false);
         });
     }
 
@@ -316,10 +315,10 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             await _decodeGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                // Yield before heavy I/O to allow UI thread to process pending work
+                // Reduced yield before heavy I/O for better throughput
                 if (_uiBusy)
                 {
-                    await Task.Delay(10, ct).ConfigureAwait(false);
+                    await Task.Delay(2, ct).ConfigureAwait(false);
                 }
                 
                 using var fs = File.Open(meta.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -334,10 +333,10 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 try { sb.Dispose(); } catch {}
                 AddEntry(key, entry);
                 
-                // Another yield before UI marshaling when busy
+                // Reduced yield before UI marshaling
                 if (_uiBusy)
                 {
-                    await Task.Delay(5, ct).ConfigureAwait(false);
+                    await Task.Delay(2, ct).ConfigureAwait(false);
                 }
                 
                 await CreateAndQueueApplyAsync(meta, entry, width, gen, allowDownscale).ConfigureAwait(false);
@@ -415,14 +414,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         {
             try
             {
-                // Add timeout to prevent indefinite blocking on UI thread
-                bool acquired = await _uiGate.WaitAsync(millisecondsTimeout: 1000);
+                // Increased timeout and retry logic for better reliability
+                bool acquired = await _uiGate.WaitAsync(millisecondsTimeout: 2000);
                 if (!acquired)
                 {
-                    // If can't acquire in 1 second, re-queue for later
-                    EnqueueApply(meta, null!, width, gen, allowDownscale);
-                    tcs.TrySetResult(false);
-                    return;
+                    // Retry once with longer timeout before giving up
+                    acquired = await _uiGate.WaitAsync(millisecondsTimeout: 3000);
+                    if (!acquired)
+                    {
+                        tcs.TrySetResult(false);
+                        return;
+                    }
                 }
                 
                 try
@@ -457,9 +459,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         int latest = _fileGeneration.TryGetValue(meta.FilePath, out var g) ? g : gen; 
         if(gen < latest && !allowDownscale) return; 
         
-        // Skip enqueuing if src is null (timeout case)
-        if (src == null) return;
-        
+        // Allow null src to be enqueued for retry
         _applyQ.Enqueue((meta,src,width,gen)); 
         ScheduleDrain(); 
     }
@@ -475,20 +475,24 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             {
                 await Task.Yield(); 
                 int processed=0;
-                // Reduce batch size when UI is busy
-                int batchSize = _uiBusy ? Math.Max(2, AppDefaults.DrainBatch / 3) : AppDefaults.DrainBatch;
+                // Slightly increased batch size for better throughput
+                int batchSize = _uiBusy ? Math.Max(3, AppDefaults.DrainBatch / 2) : AppDefaults.DrainBatch;
                 
                 while(!_applySuspended && _applyQ.TryDequeue(out var item))
                 {
-                    TryApply(item.Meta,item.Src,item.Width,item.Gen,false);
+                    // Skip null sources (failed timeout cases)
+                    if (item.Src != null)
+                    {
+                        TryApply(item.Meta,item.Src,item.Width,item.Gen,false);
+                    }
                     processed++;
                     
                     if(processed >= batchSize)
                     { 
                         processed=0; 
-                        // More aggressive yielding when busy
+                        // Reduced yielding for better throughput
                         if (_uiBusy)
-                            await Task.Delay(5);
+                            await Task.Delay(2);
                         else
                             await Task.Yield(); 
                     }

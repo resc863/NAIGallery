@@ -64,6 +64,9 @@ public sealed partial class ImageDetailPage : Page
         _isForwardConnectedAnimating = false;
         try { _thumbCts?.Cancel(); _thumbCts?.Dispose(); } catch { }
         _thumbCts = null;
+        
+        // Note: Thumbnail pipeline continues to run in background independently
+        // No need to stop it as it's a service-level component
     }
 
     private void ImageDetailPage_Loaded(object sender, RoutedEventArgs e)
@@ -75,6 +78,8 @@ public sealed partial class ImageDetailPage : Page
         try { if (MetaScroll != null) MetaScroll.Opacity = 0; } catch { }
         try { if (SplitterBorder != null) SplitterBorder.Opacity = 0; } catch { }
         try { if (DetailImage != null) DetailImage.Opacity = 0; } catch { } // ÀÌ¹ÌÁö ¼û±è
+        try { if (PrevButton != null) PrevButton.Opacity = 0; } catch { }
+        try { if (NextButton != null) NextButton.Opacity = 0; } catch { }
 
         // If navigation parameter was deferred, load now
         if (_pendingPath != null) { var p = _pendingPath; _pendingPath = null; LoadImage(p); }
@@ -198,6 +203,8 @@ public sealed partial class ImageDetailPage : Page
         try { FadeInElement(TopBar, 200); } catch { if (TopBar != null) TopBar.Opacity = 1; }
         try { FadeInElement(MetaScroll, 200); } catch { if (MetaScroll != null) MetaScroll.Opacity = 1; }
         try { FadeInElement(SplitterBorder, 200); } catch { if (SplitterBorder != null) SplitterBorder.Opacity = 1; }
+        try { FadeInElement(PrevButton, 200); } catch { if (PrevButton != null) PrevButton.Opacity = 0.7; }
+        try { FadeInElement(NextButton, 200); } catch { if (NextButton != null) NextButton.Opacity = 0.7; }
     }
 
     private void FadeInElement(UIElement? el, double durationMs = 200)
@@ -670,4 +677,31 @@ public sealed partial class ImageDetailPage : Page
 
     private void Splitter_PointerExited(object sender, PointerRoutedEventArgs e)
     { if (sender is Border b && !_resizing) b.Background = _splitterBaseBrush; }
+
+    // Navigation button handlers
+    private void PrevButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateRelative(-1);
+    }
+
+    private void NextButton_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateRelative(1);
+    }
+
+    private void NavButton_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is Button btn)
+        {
+            btn.Opacity = 1.0;
+        }
+    }
+
+    private void NavButton_PointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is Button btn)
+        {
+            btn.Opacity = 0.7;
+        }
+    }
 }

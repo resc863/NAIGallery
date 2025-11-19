@@ -13,10 +13,10 @@ internal static class AppDefaults
     public const int SmallThumbMax = 160;
     public const int DrainBatch = 9; // Reduced from 12 to 9 for better UI responsiveness
 
-    // UI responsiveness - more aggressive tuning
-    public const int UiPulsePeriodMs = 200;              // Reduced from 250ms to 200ms for faster response
-    public const double UiLagBusyThresholdMs = 30;       // Reduced from 40ms to 30ms for earlier detection
-    public const double UiLagEmaBusyThresholdMs = 20;    // Reduced from 25ms to 20ms for smoother experience
+    // UI responsiveness - balanced tuning for smooth scrolling and interaction
+    public const int UiPulsePeriodMs = 150;              // Reduced from 200ms to 150ms for faster response
+    public const double UiLagBusyThresholdMs = 40;       // Increased from 30ms to 40ms to reduce false positives
+    public const double UiLagEmaBusyThresholdMs = 25;    // Increased from 20ms to 25ms for smoother experience
 
     // PNG text chunk parsing limits
     public const int PngMaxChunkLength = 64 * 1024 * 1024;  // 64MB

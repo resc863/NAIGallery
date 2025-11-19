@@ -21,7 +21,7 @@ public sealed partial class GalleryPage
         try { GalleryView?.InvalidateMeasure(); GalleryView?.InvalidateArrange(); } catch { }
     }
 
-    private void SuppressImplicitBriefly(int ms = 250)
+    private void SuppressImplicitBriefly(int ms = 150) // Reduced from 250ms to 150ms
     {
         try { _postZoomSuppressCts?.Cancel(); } catch { }
         _postZoomSuppressCts = new CancellationTokenSource(); var ct = _postZoomSuppressCts.Token;
@@ -177,8 +177,22 @@ public sealed partial class GalleryPage
     private void Item_Tapped(object sender, TappedRoutedEventArgs e)
     {
         var now = DateTime.UtcNow;
-        if (_isScrollBubbling) { e.Handled = true; return; }
-        if ((now - _lastTapAt).TotalMilliseconds < 150) { e.Handled = true; return; }
+        // Reduced scroll bubbling check delay for better click responsiveness
+        if (_isScrollBubbling) 
+        { 
+            // Check if scroll has actually stopped recently
+            if (_scrollViewer != null)
+            {
+                var lastScrollTime = (now - _lastTapAt).TotalMilliseconds;
+                // Allow tap if enough time has passed (100ms instead of waiting for bubbling flag)
+                if (lastScrollTime < 100) { e.Handled = true; return; }
+            }
+            else
+            {
+                e.Handled = true; return;
+            }
+        }
+        if ((now - _lastTapAt).TotalMilliseconds < 100) { e.Handled = true; return; } // Reduced from 150ms to 100ms
         _lastTapAt = now;
         if (!TryResolveTap(sender, e, out var itemRoot, out var meta, out var path) || string.IsNullOrEmpty(path)) return;
         e.Handled = true;
