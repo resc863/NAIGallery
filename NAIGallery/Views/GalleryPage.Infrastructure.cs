@@ -57,7 +57,7 @@ public sealed partial class GalleryPage
                 var ct = _scrollIdleCts.Token;
                 _ = Task.Run(async () =>
                 {
-                    try { await Task.Delay(90, ct); } catch { return; }
+                    try { await Task.Delay(50, ct); } catch { return; } // Reduced from 90ms to 50ms
                     if (ct.IsCancellationRequested) return;
                     DispatcherQueue.TryEnqueue(() =>
                     {
@@ -296,10 +296,10 @@ public sealed partial class GalleryPage
 
                 int delay = idleCyclesWithoutWork switch
                 {
-                    < 2 => 140,
-                    < 5 => 250,
-                    < 15 => 500,
-                    _ => 1000
+                    < 2 => 80,  // Reduced from 140ms
+                    < 5 => 150, // Reduced from 250ms
+                    < 15 => 300, // Reduced from 500ms
+                    _ => 600 // Reduced from 1000ms
                 };
                 try { await Task.Delay(delay, token); } catch { break; }
             }

@@ -11,6 +11,7 @@
             </ResourceDictionary.MergedDictionaries>
             <!-- Keep only non-string shared resources -->
             <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+            <conv:NullToCollapsedConverter x:Key="NullToCollapsedConverter" />
             <FontFamily x:Key="AppFontFamily">Segoe UI Variable, Segoe UI, Malgun Gothic, "Noto Sans CJK KR", "Noto Sans KR", Arial Unicode MS</FontFamily>
             <Style TargetType="TextBlock">
                 <Setter Property="FontFamily" Value="{StaticResource AppFontFamily}" />

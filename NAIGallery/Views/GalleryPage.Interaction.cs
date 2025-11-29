@@ -229,13 +229,23 @@ public sealed partial class GalleryPage
                 if (container == null) container = FindChildByName(fe, "LoadingText");
             }
             if (container != null) container.Visibility = Visibility.Collapsed;
+            
+            // Only update AspectRatio if we don't have original dimensions
+            // (AspectRatio should already be computed from OriginalWidth/OriginalHeight)
             if (root?.DataContext is ImageMetadata meta && img.Source is BitmapSource bs)
             {
-                double w = bs.PixelWidth, h = bs.PixelHeight;
-                if (w > 0 && h > 0)
+                if (!meta.OriginalWidth.HasValue || !meta.OriginalHeight.HasValue)
                 {
-                    var ar = Math.Clamp(w / h, 0.1, 10.0);
-                    if (Math.Abs(ar - meta.AspectRatio) > 0.001) { meta.AspectRatio = ar; RequestReflow(60); }
+                    double w = bs.PixelWidth, h = bs.PixelHeight;
+                    if (w > 0 && h > 0)
+                    {
+                        var ar = Math.Clamp(w / h, 0.1, 10.0);
+                        if (Math.Abs(ar - meta.AspectRatio) > 0.001) 
+                        { 
+                            meta.AspectRatio = ar; 
+                            RequestReflow(60); 
+                        }
+                    }
                 }
             }
         }

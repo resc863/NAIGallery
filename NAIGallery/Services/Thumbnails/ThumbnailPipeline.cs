@@ -153,9 +153,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         // If UI is busy, scale down to leave headroom
         if (_uiBusy)
         {
-            int reserve = Math.Clamp(cpu / 3, 1, 4); // reserve ~1/3 cores for UI/animations
-            ideal = Math.Max(1, Math.Min(ideal, cpu - reserve));
-            ideal = Math.Min(ideal, 8);
+            int reserve = Math.Clamp(cpu / 4, 1, 3); // Reduced reserve: was 1/3, now 1/4 with lower max
+            ideal = Math.Max(2, Math.Min(ideal, cpu - reserve)); // Minimum 2 workers
+            ideal = Math.Min(ideal, 10); // Reduced max: was 8, now 10
         }
         ideal = Math.Clamp(ideal, 2, 16);
         int cur = _targetWorkers;
@@ -210,14 +210,10 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 { 
                     await EnsureThumbnailAsync(req.Meta, req.Width, token, false).ConfigureAwait(false); 
                     
-                    // Reduced yielding time when UI is busy
+                    // Minimal yielding for better throughput
                     if (_uiBusy)
                     {
-                        await Task.Delay(2, token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await Task.Yield();
+                        await Task.Delay(1, token).ConfigureAwait(false);
                     }
                 } 
                 catch (OperationCanceledException) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1); }
@@ -269,11 +265,11 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         if(maxParallelism<=0)
         {
             int cpu = Math.Max(1,Environment.ProcessorCount-1);
-            // Reduced reserve for better throughput
-            int reserve = _uiBusy ? Math.Max(1, cpu/3) : Math.Max(1, cpu/4);
+            // Optimized reserve for better throughput
+            int reserve = _uiBusy ? Math.Max(1, cpu/4) : 1; // Reduced reserve when busy
             int effective = Math.Max(1, cpu - reserve);
             // Increased parallelism limit for better performance
-            maxParallelism = Math.Clamp(effective, 1, _uiBusy ? 6 : 16);
+            maxParallelism = Math.Clamp(effective, 1, _uiBusy ? 8 : 20); // Increased limits
         }
         if(maxParallelism<=1)
         { 
@@ -282,9 +278,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 if(ct.IsCancellationRequested) break; 
                 await EnsureThumbnailAsync(m, decodeWidth, ct, false).ConfigureAwait(false);
                 
-                // Reduced yield between items
+                // Minimal delay between items
                 if (_uiBusy)
-                    await Task.Delay(5, ct).ConfigureAwait(false);
+                    await Task.Delay(2, ct).ConfigureAwait(false);
             } 
             return; 
         }
@@ -298,9 +294,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         {
             await EnsureThumbnailAsync(m, decodeWidth, token, false).ConfigureAwait(false);
             
-            // Reduced cooperative yielding
+            // Minimal cooperative yielding
             if (_uiBusy)
-                await Task.Delay(2, token).ConfigureAwait(false);
+                await Task.Delay(1, token).ConfigureAwait(false);
         });
     }
 
@@ -315,14 +311,25 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             await _decodeGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                // Reduced yield before heavy I/O for better throughput
-                if (_uiBusy)
-                {
-                    await Task.Delay(2, ct).ConfigureAwait(false);
-                }
+                // No yield before I/O - maximize throughput
                 
                 using var fs = File.Open(meta.FilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using IRandomAccessStream ras = fs.AsRandomAccessStream();
+                
+                // Extract original dimensions if not already set
+                if (!meta.OriginalWidth.HasValue || !meta.OriginalHeight.HasValue)
+                {
+                    try
+                    {
+                        var decoder = await BitmapDecoder.CreateAsync(ras);
+                        meta.OriginalWidth = (int)decoder.PixelWidth;
+                        meta.OriginalHeight = (int)decoder.PixelHeight;
+                        // AspectRatio is now computed from OriginalWidth/OriginalHeight automatically
+                        ras.Seek(0); // Reset stream for decode
+                    }
+                    catch { }
+                }
+                
                 var sb = await DecodeAsync(ras, width, ct).ConfigureAwait(false);
                 if(sb==null || ct.IsCancellationRequested){ if(ct.IsCancellationRequested) { Interlocked.Increment(ref _canceled); Telemetry.DecodeCanceled.Add(1);} else { Interlocked.Increment(ref _formatErrors); Telemetry.DecodeFormatErrors.Add(1);} return; }
                 int pxCount = (int)(sb.PixelWidth * sb.PixelHeight * 4);
@@ -333,11 +340,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 try { sb.Dispose(); } catch {}
                 AddEntry(key, entry);
                 
-                // Reduced yield before UI marshaling
-                if (_uiBusy)
-                {
-                    await Task.Delay(2, ct).ConfigureAwait(false);
-                }
+                // No yield before UI marshaling
                 
                 await CreateAndQueueApplyAsync(meta, entry, width, gen, allowDownscale).ConfigureAwait(false);
             }
@@ -414,12 +417,12 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         {
             try
             {
-                // Increased timeout and retry logic for better reliability
-                bool acquired = await _uiGate.WaitAsync(millisecondsTimeout: 2000);
+                // Increased timeout with single retry
+                bool acquired = await _uiGate.WaitAsync(millisecondsTimeout: 1500);
                 if (!acquired)
                 {
-                    // Retry once with longer timeout before giving up
-                    acquired = await _uiGate.WaitAsync(millisecondsTimeout: 3000);
+                    // One retry with longer timeout
+                    acquired = await _uiGate.WaitAsync(millisecondsTimeout: 2500);
                     if (!acquired)
                     {
                         tcs.TrySetResult(false);
@@ -469,14 +472,14 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         if(_dispatcher==null || _applySuspended) return; 
         if(Interlocked.Exchange(ref _applyScheduled,1)!=0) return;
         
-        _dispatcher.TryEnqueue(DispatcherQueuePriority.Low, async () =>
+        _dispatcher.TryEnqueue(DispatcherQueuePriority.High, async () => // Priority를 High로 상향
         {
             try
             {
-                await Task.Yield(); 
+                // Minimal yielding for better responsiveness
                 int processed=0;
-                // Slightly increased batch size for better throughput
-                int batchSize = _uiBusy ? Math.Max(3, AppDefaults.DrainBatch / 2) : AppDefaults.DrainBatch;
+                // Larger batch size for better throughput
+                int batchSize = _uiBusy ? Math.Max(8, AppDefaults.DrainBatch / 2) : AppDefaults.DrainBatch;
                 
                 while(!_applySuspended && _applyQ.TryDequeue(out var item))
                 {
@@ -490,9 +493,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                     if(processed >= batchSize)
                     { 
                         processed=0; 
-                        // Reduced yielding for better throughput
+                        // Minimal yielding for better throughput
                         if (_uiBusy)
-                            await Task.Delay(2);
+                            await Task.Delay(1);
                         else
                             await Task.Yield(); 
                     }
@@ -508,11 +511,73 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private void TryApply(ImageMetadata meta, ImageSource src, int width, int gen, bool allowDownscale)
     {
-        int latest = _fileGeneration.TryGetValue(meta.FilePath, out var g) ? g : gen; if(gen < latest && !allowDownscale) return;
+        int latest = _fileGeneration.TryGetValue(meta.FilePath, out var g) ? g : gen; 
+        if(gen < latest && !allowDownscale) return;
+        
+        // UI 스레드에서 실행 중인지 확인
+        if (_dispatcher != null && !_dispatcher.HasThreadAccess)
+        {
+            _dispatcher.TryEnqueue(DispatcherQueuePriority.High, () => TryApply(meta, src, width, gen, allowDownscale));
+            return;
+        }
+        
+        // 속성 변경 전 현재 값 저장
+        var oldThumbnail = meta.Thumbnail;
+        var oldWidth = meta.ThumbnailPixelWidth;
+        bool changed = false;
+        
         if(meta.Thumbnail == null || width >= (meta.ThumbnailPixelWidth ?? 0))
-        { meta.Thumbnail = src; meta.ThumbnailPixelWidth = width; }
-        if(src is WriteableBitmap wb && wb.PixelWidth>0 && wb.PixelHeight>0)
-        { double ar = Math.Clamp(wb.PixelWidth / (double)Math.Max(1, wb.PixelHeight), 0.1, 10.0); if(Math.Abs(ar - meta.AspectRatio) > 0.001) meta.AspectRatio = ar; }
+        { 
+            if (meta.Thumbnail != src)
+            {
+                meta.Thumbnail = src;
+                changed = true;
+            }
+            
+            if (meta.ThumbnailPixelWidth != width)
+            {
+                meta.ThumbnailPixelWidth = width;
+                changed = true;
+            }
+        }
+        
+        // Only update cached AspectRatio if we don't have original dimensions
+        // (AspectRatio getter will compute from OriginalWidth/OriginalHeight if available)
+        if(!meta.OriginalWidth.HasValue || !meta.OriginalHeight.HasValue)
+        {
+            if(src is WriteableBitmap wb && wb.PixelWidth>0 && wb.PixelHeight>0)
+            { 
+                double ar = Math.Clamp(wb.PixelWidth / (double)Math.Max(1, wb.PixelHeight), 0.1, 10.0); 
+                if(Math.Abs(ar - meta.AspectRatio) > 0.001) 
+                {
+                    meta.AspectRatio = ar;
+                    changed = true;
+                }
+            }
+        }
+        
+        // 변경이 발생했으면 강제로 UI 업데이트 트리거 (x:Bind 바인딩 업데이트 보장)
+        if (changed)
+        {
+            // 방법 1: null로 초기화 후 복원 (PropertyChanged 이벤트 강제 발생)
+            var currentThumbnail = meta.Thumbnail;
+            var currentWidth = meta.ThumbnailPixelWidth;
+            
+            meta.Thumbnail = null;
+            meta.ThumbnailPixelWidth = null;
+            
+            // 즉시 복원하여 최종 값 설정
+            meta.Thumbnail = currentThumbnail;
+            meta.ThumbnailPixelWidth = currentWidth;
+            
+            // 방법 2: AspectRatio도 강제 갱신 (레이아웃 재계산 트리거)
+            if (meta.OriginalWidth.HasValue && meta.OriginalHeight.HasValue)
+            {
+                var tempAr = meta.AspectRatio;
+                meta.AspectRatio = 1.0; // 임시 값
+                meta.AspectRatio = tempAr; // 원래 값 복원
+            }
+        }
     }
 
     private string MakeCacheKey(String file, long ticks, int width)

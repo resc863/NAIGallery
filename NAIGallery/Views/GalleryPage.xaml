@@ -20,6 +20,9 @@
                 <ToggleButton Width="40" Click="SortDirectionToggle_Click">
                     <TextBlock x:Name="SortDirText" Text="↑" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </ToggleButton>
+                <Button Width="40" Click="RefreshUI_Click" ToolTipService.ToolTip="UI 새로고침 (F5)">
+                    <FontIcon Glyph="&#xE72C;" FontSize="16" />
+                </Button>
                 <!-- x:Bind instead of Binding for AOT friendliness -->
                 <ProgressRing IsActive="{x:Bind ViewModel.IsIndexing, Mode=OneWay}" Width="28" Height="28" />
             </StackPanel>
@@ -52,11 +55,24 @@
                                     BorderBrush="Gray"
                                     BorderThickness="1"
                                     CornerRadius="4"
-                                    Background="Transparent"
+                                    Background="#20808080"
                                     Tapped="Item_Tapped"
                                     PointerEntered="Tile_PointerEntered"
                                     PointerExited="Tile_PointerExited">
                                 <Grid Background="Transparent">
+                                    <!-- Placeholder for loading state -->
+                                    <Grid x:Name="PlaceholderGrid"
+                                          Background="#10808080"
+                                          Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToVisibilityConverter}}">
+                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                                            <ProgressRing IsActive="True" Width="24" Height="24" />
+                                            <TextBlock Text="로딩 중..."
+                                                       Foreground="Gray"
+                                                       FontSize="12"
+                                                       HorizontalAlignment="Center" />
+                                        </StackPanel>
+                                    </Grid>
+                                    
                                     <Image x:Name="connectedElement"
                                            Tag="{x:Bind FilePath}"
                                            Source="{x:Bind Thumbnail, Mode=OneWay}"
@@ -74,21 +90,14 @@
                                             VerticalAlignment="Bottom"
                                             Padding="4"
                                             CornerRadius="0,0,4,4"
-                                            IsHitTestVisible="False">
+                                            IsHitTestVisible="False"
+                                            Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToCollapsedConverter}}">
                                         <TextBlock Text="{x:Bind Prompt, Mode=OneWay}"
                                                    Foreground="White"
                                                    FontSize="12"
                                                    MaxLines="2"
                                                    TextTrimming="CharacterEllipsis" />
                                     </Border>
-
-                                    <TextBlock x:Name="LoadingText"
-                                               Text="로딩"
-                                               Foreground="Gray"
-                                               HorizontalAlignment="Center"
-                                               VerticalAlignment="Center"
-                                               Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToVisibilityConverter}}"
-                                               IsHitTestVisible="False" />
                                 </Grid>
                             </Border>
                         </controls:AspectPresenter>

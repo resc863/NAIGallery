@@ -9,6 +9,8 @@ using System.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.WinUI.Collections; // AdvancedCollectionView
+using System.Collections.Specialized;
+using Microsoft.UI.Dispatching;
 
 namespace NAIGallery.ViewModels;
 
@@ -21,6 +23,7 @@ public enum GallerySortDirection { Asc, Desc }
 public partial class GalleryViewModel : ObservableObject
 {
     private readonly IImageIndexService _indexService;
+    private readonly DispatcherQueue? _dispatcherQueue;
 
     [ObservableProperty]
     private string _searchQuery = string.Empty;
@@ -76,13 +79,44 @@ public partial class GalleryViewModel : ObservableObject
     public ObservableCollection<string> TagSuggestions { get; } = new();
 
     public event EventHandler? ImagesChanged;
+    
+    // 스크롤 위치 보존을 위한 이벤트
+    public event EventHandler? BeforeCollectionRefresh;
+    public event EventHandler? AfterCollectionRefresh;
 
     public GalleryViewModel(IImageIndexService service)
     {
         _indexService = service;
+        
+        // UI 스레드의 DispatcherQueue 캡처
+        try
+        {
+            _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        }
+        catch
+        {
+            _dispatcherQueue = null;
+        }
+        
         ImagesView = new AdvancedCollectionView(Images, false);
         ApplySortToView();
         _ = ApplySearchAsync();
+        
+        // 인덱스 변경 이벤트 구독 (실시간 UI 업데이트)
+        _indexService.IndexChanged += OnIndexChanged;
+    }
+
+    private void OnIndexChanged(object? sender, EventArgs e)
+    {
+        // 인덱스가 변경되면 즉시 UI 업데이트 (폴링 제거)
+        if (_dispatcherQueue != null && !_dispatcherQueue.HasThreadAccess)
+        {
+            _dispatcherQueue.TryEnqueue(() => _ = ApplySearchAsync(throttle: false));
+        }
+        else
+        {
+            _ = ApplySearchAsync(throttle: false);
+        }
     }
 
     public IAsyncRelayCommand<string> IndexFolderCommand => new AsyncRelayCommand<string>(IndexFolderAsync);
@@ -108,18 +142,26 @@ public partial class GalleryViewModel : ObservableObject
     private void ApplySortToView()
     {
         if (ImagesView == null) return;
-        ImagesView.SortDescriptions.Clear();
-        var dir = _sortDirection == GallerySortDirection.Asc ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
-        switch (_sortField)
+        
+        try
         {
-            case GallerySortField.Date:
-                ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.LastWriteTimeTicks), dir));
-                break;
-            default:
-                ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.FilePath), dir));
-                break;
+            ImagesView.SortDescriptions.Clear();
+            var dir = _sortDirection == GallerySortDirection.Asc ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
+            switch (_sortField)
+            {
+                case GallerySortField.Date:
+                    ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.LastWriteTimeTicks), dir));
+                    break;
+                default:
+                    ImagesView.SortDescriptions.Add(new CommunityToolkit.WinUI.Collections.SortDescription(nameof(ImageMetadata.FilePath), dir));
+                    break;
+            }
+            ImagesView.RefreshSorting();
         }
-        ImagesView.RefreshSorting();
+        catch
+        {
+            // UI 컬렉션 조작 중 예외 무시
+        }
     }
 
     public async Task IndexFolderAsync(string? folder)
@@ -131,6 +173,46 @@ public partial class GalleryViewModel : ObservableObject
         {
             await _indexService.IndexFolderAsync(folder);
             await ApplySearchAsync();
+            
+            // 인덱싱 완료 후 컬렉션 새로고침 (스크롤 위치 보존을 위해 이벤트 발생)
+            if (_dispatcherQueue != null)
+            {
+                _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.High, () =>
+                {
+                    try
+                    {
+                        // 새로고침 전 이벤트 발생 (GalleryPage가 스크롤 위치 저장)
+                        BeforeCollectionRefresh?.Invoke(this, EventArgs.Empty);
+                        
+                        // Images 컬렉션 강제 갱신 (x:Bind 업데이트 트리거)
+                        var currentItems = Images.ToList();
+                        Images.Clear();
+                        
+                        // 잠시 대기 후 복원 (UI 스레드가 Clear를 처리할 시간 제공)
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(10);
+                            _dispatcherQueue.TryEnqueue(() =>
+                            {
+                                foreach (var item in currentItems)
+                                {
+                                    Images.Add(item);
+                                }
+                                ImagesView.RefreshSorting();
+                                ImagesChanged?.Invoke(this, EventArgs.Empty);
+                                
+                                // 새로고침 후 이벤트 발생 (GalleryPage가 스크롤 위치 복원)
+                                _ = Task.Delay(50).ContinueWith(_ =>
+                                {
+                                    _dispatcherQueue.TryEnqueue(() => 
+                                        AfterCollectionRefresh?.Invoke(this, EventArgs.Empty));
+                                });
+                            });
+                        });
+                    }
+                    catch { }
+                });
+            }
         }
         finally
         {
@@ -154,11 +236,19 @@ public partial class GalleryViewModel : ObservableObject
     private void ApplySortOnly()
     {
         if (_lastSearch.Count == 0) return;
-        var sorted = Sort(_lastSearch).ToList();
-        Images.Clear();
-        foreach (var m in sorted) Images.Add(m);
-        ImagesView.RefreshSorting();
-        ImagesChanged?.Invoke(this, EventArgs.Empty);
+        
+        try
+        {
+            var sorted = Sort(_lastSearch).ToList();
+            Images.Clear();
+            foreach (var m in sorted) Images.Add(m);
+            ImagesView.RefreshSorting();
+            ImagesChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch
+        {
+            // UI 컬렉션 조작 중 예외 무시
+        }
     }
 
     private async Task ApplySearchAsync(bool throttle = false)
@@ -174,21 +264,84 @@ public partial class GalleryViewModel : ObservableObject
             _lastSearch = results;
             if (cts.IsCancellationRequested) return;
             var sorted = Sort(results).ToList();
-            Images.Clear();
-            foreach (var m in sorted) Images.Add(m);
-            ImagesView.RefreshSorting();
-            ImagesChanged?.Invoke(this, EventArgs.Empty);
+            
+            // UI 스레드에서 컬렉션 업데이트
+            void UpdateAction()
+            {
+                try
+                {
+                    // 점진적 업데이트로 UI 응답성 향상
+                    if (Images.Count == 0 || Math.Abs(Images.Count - sorted.Count) > 100)
+                    {
+                        // 큰 변경 시 일괄 교체
+                        Images.Clear();
+                        foreach (var m in sorted) Images.Add(m);
+                    }
+                    else
+                    {
+                        // 작은 변경 시 점진적 업데이트
+                        UpdateCollectionIncrementally(sorted);
+                    }
+                    
+                    ImagesView.RefreshSorting();
+                    ImagesChanged?.Invoke(this, EventArgs.Empty);
+                }
+                catch
+                {
+                    // UI 컬렉션 조작 중 예외 무시
+                }
+            }
+            
+            if (_dispatcherQueue != null && !_dispatcherQueue.HasThreadAccess)
+            {
+                _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, UpdateAction);
+            }
+            else
+            {
+                UpdateAction();
+            }
         }
         catch (TaskCanceledException) { }
+        catch
+        {
+            // 기타 예외 무시
+        }
+    }
+    
+    private void UpdateCollectionIncrementally(List<ImageMetadata> newItems)
+    {
+        var currentPaths = new HashSet<string>(Images.Select(m => m.FilePath));
+        var newPaths = new HashSet<string>(newItems.Select(m => m.FilePath));
+        
+        // 제거할 항목
+        for (int i = Images.Count - 1; i >= 0; i--)
+        {
+            if (!newPaths.Contains(Images[i].FilePath))
+                Images.RemoveAt(i);
+        }
+        
+        // 추가할 항목
+        foreach (var item in newItems)
+        {
+            if (!currentPaths.Contains(item.FilePath))
+                Images.Add(item);
+        }
     }
 
     private void UpdateSuggestions()
     {
-        TagSuggestions.Clear();
-        if (string.IsNullOrWhiteSpace(_searchQuery)) return;
-        // Use last token for suggestion
-        var parts = _searchQuery.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var prefix = parts.Length == 0 ? _searchQuery : parts[^1];
-        foreach (var s in _indexService.SuggestTags(prefix)) TagSuggestions.Add(s);
+        try
+        {
+            TagSuggestions.Clear();
+            if (string.IsNullOrWhiteSpace(_searchQuery)) return;
+            // Use last token for suggestion
+            var parts = _searchQuery.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var prefix = parts.Length == 0 ? _searchQuery : parts[^1];
+            foreach (var s in _indexService.SuggestTags(prefix)) TagSuggestions.Add(s);
+        }
+        catch
+        {
+            // 제안 업데이트 중 예외 무시
+        }
     }
 }

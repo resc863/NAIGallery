@@ -57,4 +57,7 @@ public interface IImageIndexService
 
     /// <summary>Attempt to enrich a metadata object with missing structured fields.</summary>
     void RefreshMetadata(ImageMetadata meta);
+    
+    /// <summary>Event raised when the index changes (items added/removed/updated).</summary>
+    event EventHandler? IndexChanged;
 }

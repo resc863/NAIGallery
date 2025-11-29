@@ -32,10 +32,18 @@ public class ImageIndexService : IImageIndexService
 
     private int _thumbCapacity = AppDefaults.DefaultThumbnailCapacityBytes;
     public event Action<int>? ThumbnailCacheCapacityChanged;
+    
+    // 인덱스 변경 이벤트 (실시간 UI 업데이트용)
+    public event EventHandler? IndexChanged;
 
     private volatile List<ImageMetadata>? _sortedCache;
     private readonly object _sortedLock = new();
-    private void InvalidateSorted() => _sortedCache = null;
+    private void InvalidateSorted() 
+    { 
+        _sortedCache = null;
+        // 인덱스 변경 알림 (UI 즉시 업데이트)
+        IndexChanged?.Invoke(this, EventArgs.Empty);
+    }
 
     private readonly TagTrie _tagTrie = new();
 
@@ -119,8 +127,107 @@ public class ImageIndexService : IImageIndexService
             return;
         }
 
-        var channel = System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(256) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
+        // Phase 1: Quick dimension scan to immediately populate UI placeholders
+        var dimChannel = System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(256) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
         int workerCount = Math.Max(1, Environment.ProcessorCount - 1);
+        long dimensionsScanned = 0;
+        int notifyBatch = Math.Max(1, total / 50); // 2% 단위로 UI 업데이트
+
+        var dimProducer = Task.Run(async () =>
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(folder, "*.png", SearchOption.AllDirectories))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await dimChannel.Writer.WriteAsync(file, ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch { }
+            finally { dimChannel.Writer.TryComplete(); }
+        }, ct);
+
+        var dimConsumers = new List<Task>();
+        for (int i = 0; i < workerCount; i++)
+        {
+            dimConsumers.Add(Task.Run(async () =>
+            {
+                await foreach (var file in dimChannel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+                {
+                    bool needsDimensions = false;
+                    if (_index.TryGetValue(file, out var existing))
+                    {
+                        if (!existing.OriginalWidth.HasValue || !existing.OriginalHeight.HasValue)
+                            needsDimensions = true;
+                    }
+                    else
+                        needsDimensions = true;
+
+                    if (needsDimensions)
+                    {
+                        try
+                        {
+                            var dims = ExtractQuickDimensions(file);
+                            if (dims.HasValue)
+                            {
+                                if (!_index.TryGetValue(file, out var meta))
+                                {
+                                    meta = new ImageMetadata
+                                    {
+                                        FilePath = file,
+                                        RelativePath = Path.GetRelativePath(folder, file),
+                                        OriginalWidth = dims.Value.width,
+                                        OriginalHeight = dims.Value.height,
+                                        Tags = new List<string>(),
+                                        LastWriteTimeTicks = new FileInfo(file).LastWriteTimeUtc.Ticks
+                                    };
+                                    _index[file] = meta;
+                                    
+                                    // 일정 수량마다 UI 업데이트 알림
+                                    long scanned = Interlocked.Increment(ref dimensionsScanned);
+                                    if (scanned % notifyBatch == 0 || scanned == total)
+                                    {
+                                        InvalidateSorted();
+                                    }
+                                }
+                                else
+                                {
+                                    meta.OriginalWidth = dims.Value.width;
+                                    meta.OriginalHeight = dims.Value.height;
+                                    
+                                    long scanned = Interlocked.Increment(ref dimensionsScanned);
+                                    if (scanned % notifyBatch == 0 || scanned == total)
+                                    {
+                                        InvalidateSorted();
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Interlocked.Increment(ref dimensionsScanned);
+                            }
+                        }
+                        catch 
+                        { 
+                            Interlocked.Increment(ref dimensionsScanned);
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Increment(ref dimensionsScanned);
+                    }
+                }
+            }, ct));
+        }
+
+        await Task.WhenAll(dimConsumers.Append(dimProducer)).ConfigureAwait(false);
+        
+        // Phase 1 완료 후 UI 최종 업데이트
+        InvalidateSorted();
+
+        // Phase 2: Full metadata extraction (background)
+        var channel = System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(256) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
         long processed = 0;
         var tagBatches = new ConcurrentBag<IEnumerable<string>>();
         var sw = Stopwatch.StartNew();
@@ -150,7 +257,13 @@ public class ImageIndexService : IImageIndexService
                     bool unchanged = false;
                     if (_index.TryGetValue(file, out var existing))
                     {
-                        try { var t = new FileInfo(file).LastWriteTimeUtc.Ticks; if (existing.LastWriteTimeTicks == t) unchanged = true; } catch { }
+                        try 
+                        { 
+                            var t = new FileInfo(file).LastWriteTimeUtc.Ticks; 
+                            if (existing.LastWriteTimeTicks == t && existing.OriginalWidth.HasValue && existing.OriginalHeight.HasValue && existing.Tags.Count > 0) 
+                                unchanged = true; 
+                        } 
+                        catch { }
                     }
                     if (!unchanged)
                     {
@@ -160,18 +273,32 @@ public class ImageIndexService : IImageIndexService
                             meta.SearchText = BuildSearchText(meta);
                             meta.TokenSet = BuildFrozenTokenSet(meta);
 
-                            // Remove old index entry for this file from token search index to avoid stale refs
                             if (_index.TryGetValue(file, out var oldMeta))
                                 _searchIndex.Remove(oldMeta);
 
                             _index[file] = meta;
                             tagBatches.Add(meta.Tags);
                             _searchIndex.Index(meta);
-                            InvalidateSorted();
+                            
+                            // 일정 수량마다 UI 업데이트 알림
+                            long proc = Interlocked.Increment(ref processed);
+                            if (proc % notifyBatch == 0 || proc == total)
+                            {
+                                InvalidateSorted();
+                            }
+                            
                             foreach (var t in meta.Tags) _tagTrie.Add(t);
                         }
+                        else
+                        {
+                            Interlocked.Increment(ref processed);
+                        }
                     }
-                    Interlocked.Increment(ref processed);
+                    else
+                    {
+                        Interlocked.Increment(ref processed);
+                    }
+                    
                     ThrottledProgress(processed, total, progress, sw);
                 }
             }, ct));
@@ -190,7 +317,46 @@ public class ImageIndexService : IImageIndexService
         }
 
         progress?.Report(1);
+        
+        // Phase 2 완료 후 UI 최종 업데이트
+        InvalidateSorted();
+        
         await SaveIndexAsync(folder).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// PNG 파일에서 IHDR 청크만 빠르게 읽어 원본 크기 추출 (메타데이터 파싱보다 훨씬 빠름)
+    /// </summary>
+    private static (int width, int height)? ExtractQuickDimensions(string filePath)
+    {
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            // PNG signature: 89 50 4E 47 0D 0A 1A 0A
+            var sig = new byte[8];
+            if (fs.Read(sig, 0, 8) != 8) return null;
+            if (sig[0] != 0x89 || sig[1] != 0x50 || sig[2] != 0x4E || sig[3] != 0x47) return null;
+
+            // IHDR chunk: 4 bytes length + "IHDR" + width(4) + height(4) + ...
+            var lenBuf = new byte[4];
+            if (fs.Read(lenBuf, 0, 4) != 4) return null;
+            
+            var typeBuf = new byte[4];
+            if (fs.Read(typeBuf, 0, 4) != 4) return null;
+            if (typeBuf[0] != 'I' || typeBuf[1] != 'H' || typeBuf[2] != 'D' || typeBuf[3] != 'R') return null;
+
+            var dimBuf = new byte[8];
+            if (fs.Read(dimBuf, 0, 8) != 8) return null;
+
+            int width = (dimBuf[0] << 24) | (dimBuf[1] << 16) | (dimBuf[2] << 8) | dimBuf[3];
+            int height = (dimBuf[4] << 24) | (dimBuf[5] << 16) | (dimBuf[6] << 8) | dimBuf[7];
+
+            if (width > 0 && height > 0 && width < 100000 && height < 100000)
+                return (width, height);
+
+            return null;
+        }
+        catch { return null; }
     }
 
     private static void ThrottledProgress(long processed, int total, IProgress<double>? progress, Stopwatch sw)
@@ -204,6 +370,7 @@ public class ImageIndexService : IImageIndexService
         {
             var json = await File.ReadAllTextAsync(path).ConfigureAwait(false);
             var list = JsonSerializer.Deserialize<List<ImageMetadata>>(json) ?? new();
+            int loaded = 0, withDimensions = 0;
             foreach (var meta in list)
             {
                 if (string.IsNullOrWhiteSpace(meta.FilePath) && meta.RelativePath != null)
@@ -217,15 +384,23 @@ public class ImageIndexService : IImageIndexService
                 {
                     try { meta.LastWriteTimeTicks = new FileInfo(meta.FilePath).LastWriteTimeUtc.Ticks; } catch { }
                 }
+                
+                // OriginalWidth/OriginalHeight are loaded from JSON
+                // AspectRatio getter will compute from them automatically
+                if (meta.OriginalWidth.HasValue && meta.OriginalHeight.HasValue)
+                    withDimensions++;
+                
                 if (!string.IsNullOrWhiteSpace(meta.FilePath))
                 {
                     _index[meta.FilePath] = meta;
                     foreach (var t in meta.Tags) _tagSet.Add(t);
                     _searchIndex.Index(meta);
                     foreach (var t in meta.Tags) _tagTrie.Add(t);
+                    loaded++;
                 }
             }
             InvalidateSorted();
+            _logger?.LogInformation("Loaded {Loaded} images from index, {WithDimensions} have original dimensions", loaded, withDimensions);
         }
         catch { }
     }
@@ -249,7 +424,9 @@ public class ImageIndexService : IImageIndexService
                                   CharacterPrompts = m.CharacterPrompts,
                                   Parameters = m.Parameters,
                                   Tags = m.Tags,
-                                  LastWriteTimeTicks = m.LastWriteTimeTicks
+                                  LastWriteTimeTicks = m.LastWriteTimeTicks,
+                                  OriginalWidth = m.OriginalWidth,
+                                  OriginalHeight = m.OriginalHeight
                               }).ToList();
             var json = JsonSerializer.Serialize(list, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(temp, json).ConfigureAwait(false);

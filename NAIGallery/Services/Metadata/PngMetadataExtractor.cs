@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
+using Windows.Graphics.Imaging;
 
 namespace NAIGallery.Services.Metadata;
 
@@ -31,6 +32,19 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
 
         var tags = BuildTags(basePrompt, characterPrompts, prompt);
         var fi = new FileInfo(file);
+        
+        // Extract original image dimensions
+        int? originalWidth = null, originalHeight = null;
+        try
+        {
+            using var fs = File.OpenRead(file);
+            using var ras = fs.AsRandomAccessStream();
+            var decoder = BitmapDecoder.CreateAsync(ras).AsTask().GetAwaiter().GetResult();
+            originalWidth = (int)decoder.PixelWidth;
+            originalHeight = (int)decoder.PixelHeight;
+        }
+        catch { }
+        
         return new ImageMetadata
         {
             FilePath = file,
@@ -42,7 +56,9 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
             CharacterPrompts = characterPrompts,
             Parameters = parameters.Count > 0 ? parameters : null,
             Tags = tags,
-            LastWriteTimeTicks = fi.LastWriteTimeUtc.Ticks
+            LastWriteTimeTicks = fi.LastWriteTimeUtc.Ticks,
+            OriginalWidth = originalWidth,
+            OriginalHeight = originalHeight
         };
     }
 

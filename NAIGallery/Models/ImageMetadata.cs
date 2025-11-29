@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using System.ComponentModel;
@@ -52,6 +53,12 @@ public class ImageMetadata : INotifyPropertyChanged
     /// <summary>UTC last write time ticks used for date sorting.</summary>
     public long? LastWriteTimeTicks { get; set; }
 
+    /// <summary>Original image width in pixels (persisted for aspect ratio calculation).</summary>
+    public int? OriginalWidth { get; set; }
+
+    /// <summary>Original image height in pixels (persisted for aspect ratio calculation).</summary>
+    public int? OriginalHeight { get; set; }
+
     private ImageSource? _thumbnail;
 
     /// <summary>
@@ -64,19 +71,52 @@ public class ImageMetadata : INotifyPropertyChanged
         set { if (_thumbnail != value) { _thumbnail = value; OnPropertyChanged(); } }
     }
 
+    private int? _thumbnailPixelWidth;
+    
     /// <summary>
     /// Effective pixel width of the current <see cref="Thumbnail"/> for progressive upgrades.
     /// </summary>
     [JsonIgnore]
-    public int? ThumbnailPixelWidth { get; set; }
+    public int? ThumbnailPixelWidth 
+    { 
+        get => _thumbnailPixelWidth;
+        set 
+        { 
+            if (_thumbnailPixelWidth != value) 
+            { 
+                _thumbnailPixelWidth = value; 
+                OnPropertyChanged(); 
+            } 
+        }
+    }
 
     // New: aspect ratio (width/height). Default 1.0 to avoid razor-thin placeholders before decode completes.
     private double _aspectRatio = 1.0;
+    
+    /// <summary>
+    /// Aspect ratio computed from OriginalWidth/OriginalHeight or cached value.
+    /// Getter computes from original dimensions if available.
+    /// </summary>
     [JsonIgnore]
     public double AspectRatio
     {
-        get => _aspectRatio;
-        set { if (_aspectRatio != value) { _aspectRatio = value <= 0 ? 1.0 : value; OnPropertyChanged(); } }
+        get 
+        {
+            // Always compute from OriginalWidth/OriginalHeight if available
+            if (OriginalWidth.HasValue && OriginalHeight.HasValue && OriginalHeight.Value > 0)
+            {
+                return (double)OriginalWidth.Value / OriginalHeight.Value;
+            }
+            return _aspectRatio <= 0 ? 1.0 : _aspectRatio;
+        }
+        set 
+        { 
+            if (Math.Abs(_aspectRatio - value) > 0.001) 
+            { 
+                _aspectRatio = value <= 0 ? 1.0 : value;
+                OnPropertyChanged();
+            } 
+        }
     }
 
     /// <inheritdoc />

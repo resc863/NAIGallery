@@ -93,6 +93,9 @@ public sealed partial class GalleryPage : Page
 
     private DateTime _lastTapAt = DateTime.MinValue;
 
+    // 스크롤 위치 보존
+    private double _savedScrollOffset = 0;
+
     public GalleryPage()
     {
         InitializeComponent();
@@ -113,6 +116,8 @@ public sealed partial class GalleryPage : Page
         MinItemWidth = _baseItemSize; // initialize DP
 
         ViewModel.ImagesChanged += OnImagesChanged;
+        ViewModel.BeforeCollectionRefresh += OnBeforeCollectionRefresh;
+        ViewModel.AfterCollectionRefresh += OnAfterCollectionRefresh;
         Loaded += GalleryPage_Loaded;
         Unloaded += GalleryPage_Unloaded;
         SizeChanged += Gallery_SizeChanged;
@@ -219,6 +224,81 @@ public sealed partial class GalleryPage : Page
         _ = PrimeInitialAsync();
     }
 
+    private void RefreshUI_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            // 현재 스크롤 위치 저장
+            double savedScrollOffset = 0;
+            if (_scrollViewer != null)
+            {
+                savedScrollOffset = _scrollViewer.VerticalOffset;
+            }
+            
+            // 1. 강제 UI 새로고침
+            _service.SetApplySuspended(false);
+            _service.FlushApplyQueue();
+            
+            // 2. ItemsRepeater의 레이아웃 강제 갱신
+            if (GalleryView != null)
+            {
+                // ItemsRepeater의 레이아웃을 강제로 다시 측정하도록 트리거
+                var layout = GalleryView.Layout;
+                GalleryView.Layout = null;
+                GalleryView.UpdateLayout();
+                GalleryView.Layout = layout;
+                GalleryView.InvalidateMeasure();
+                GalleryView.InvalidateArrange();
+            }
+            
+            // 3. 바인딩 강제 업데이트 - ItemsSource를 일시적으로 null로 했다가 복원
+            if (ViewModel?.Images != null)
+            {
+                var items = ViewModel.Images;
+                
+                // UI 스레드에서 즉시 실행
+                DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, async () =>
+                {
+                    try
+                    {
+                        // ItemsSource를 null로 설정하여 바인딩 해제
+                        if (GalleryView != null)
+                        {
+                            GalleryView.ItemsSource = null;
+                            GalleryView.UpdateLayout();
+                            
+                            // ItemsSource를 다시 설정하여 완전한 재바인딩
+                            GalleryView.ItemsSource = items;
+                            GalleryView.InvalidateMeasure();
+                            
+                            // 레이아웃이 완료될 때까지 잠시 대기
+                            await Task.Delay(50);
+                            
+                            // 스크롤 위치 복원
+                            if (_scrollViewer != null && savedScrollOffset > 0)
+                            {
+                                _scrollViewer.ChangeView(null, savedScrollOffset, null, disableAnimation: true);
+                            }
+                        }
+                        
+                        // 4. 가시 영역 썸네일 즉시 로드
+                        EnqueueVisibleStrict();
+                        _ = ProcessQueueAsync();
+                        
+                        // 5. Viewport 업데이트 및 IdleFill 재시작
+                        UpdateSchedulerViewport();
+                        StartIdleFill();
+                        
+                        // 6. 비동기로 전체 프라이밍 수행
+                        _ = PrimeInitialAsync();
+                    }
+                    catch { }
+                });
+            }
+        }
+        catch { }
+    }
+
     private void SortFieldCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (sender is not ComboBox combo || combo.SelectedItem is not ComboBoxItem item) return;
@@ -232,13 +312,91 @@ public sealed partial class GalleryPage : Page
         _ = PrimeInitialAsync();
     }
 
-    private void Root_KeyDown(object sender, KeyRoutedEventArgs e) { }
+    private void Root_KeyDown(object sender, KeyRoutedEventArgs e) 
+    {
+        // F5 키로 새로고침 지원
+        if (e.Key == Windows.System.VirtualKey.F5)
+        {
+            RefreshUI_Click(sender, new RoutedEventArgs());
+            e.Handled = true;
+        }
+    }
+    
     private void Root_KeyUp(object sender, KeyRoutedEventArgs e) { }
 
     private void OnImagesChanged(object? sender, EventArgs e)
     {
         _initialPrimed = false;
-        _ = PrimeInitialAsync();
+        
+        // 이미지 목록이 변경되면 즉시 가시 영역 썸네일 로드
+        EnqueueVisibleStrict();
+        _ = ProcessQueueAsync();
+        UpdateSchedulerViewport();
+        
+        // UI 강제 갱신 (인덱싱 중에도 새로 추가된 아이템 즉시 표시)
+        if (GalleryView != null && DispatcherQueue != null)
+        {
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, () =>
+            {
+                try
+                {
+                    // ItemsRepeater 레이아웃 갱신
+                    GalleryView.InvalidateMeasure();
+                    GalleryView.InvalidateArrange();
+                    GalleryView.UpdateLayout();
+                }
+                catch { }
+            });
+        }
+        
+        // 인덱싱 중이 아닐 때만 전체 프라이밍 수행
+        if (!ViewModel.IsIndexing)
+        {
+            _ = PrimeInitialAsync();
+        }
+        else
+        {
+            // 인덱싱 중에는 가시 영역만 즉시 로드
+            _ = PrimeVisibleOnlyAsync();
+        }
+    }
+    
+    private async Task PrimeVisibleOnlyAsync()
+    {
+        if (_primeGate.CurrentCount == 0) return;
+        await _primeGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (ViewModel?.Images == null || ViewModel.Images.Count == 0) return;
+            
+            var decodeWidth = GetDesiredDecodeWidth();
+            var visible = new System.Collections.Generic.List<ImageMetadata>();
+            
+            // 가시 영역 아이템 수집
+            for (int i = _viewStartIndex; i <= _viewEndIndex && i < ViewModel.Images.Count; i++)
+            {
+                if (i >= 0)
+                {
+                    var meta = ViewModel.Images[i];
+                    if (meta.Thumbnail == null || (meta.ThumbnailPixelWidth ?? 0) + 32 < decodeWidth)
+                        visible.Add(meta);
+                }
+            }
+            
+            if (visible.Count > 0)
+            {
+                await _service.PreloadThumbnailsAsync(
+                    visible, 
+                    decodeWidth, 
+                    default, 
+                    maxParallelism: ComputeDecodeParallelism()
+                ).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _primeGate.Release();
+        }
     }
 
     private UIElement? GetTopBar()
@@ -277,6 +435,25 @@ public sealed partial class GalleryPage : Page
                 .ToList();
             if (parts.Count > 0) parts[^1] = s; else parts.Add(s);
             ViewModel.SearchQuery = string.Join(" ", parts);
+        }
+    }
+
+    private void OnBeforeCollectionRefresh(object? sender, EventArgs e)
+    {
+        // 컬렉션 새로고침 전 스크롤 위치 저장
+        if (_scrollViewer != null)
+        {
+            _savedScrollOffset = _scrollViewer.VerticalOffset;
+        }
+    }
+    
+    private void OnAfterCollectionRefresh(object? sender, EventArgs e)
+    {
+        // 컬렉션 새로고침 후 스크롤 위치 복원
+        if (_scrollViewer != null && _savedScrollOffset > 0)
+        {
+            _scrollViewer.ChangeView(null, _savedScrollOffset, null, disableAnimation: true);
+            _savedScrollOffset = 0; // 복원 후 초기화
         }
     }
 }
