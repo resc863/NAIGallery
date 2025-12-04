@@ -1,10 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.IO.Compression;
-using NAIGallery; // AppDefaults
+using System.Buffers.Binary;
 
 namespace NAIGallery.Services;
 
@@ -14,114 +13,152 @@ namespace NAIGallery.Services;
 /// </summary>
 internal static class PngTextChunkReader
 {
+    private static ReadOnlySpan<byte> PngSignature => [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    
+    private const int MaxChunkLength = AppDefaults.PngMaxChunkLength;
+    private const int MaxTextChunkLength = AppDefaults.PngMaxTextChunkLength;
+
     public static IEnumerable<string> ReadRawTextChunks(string file)
     {
-        const int MaxChunkLength = AppDefaults.PngMaxChunkLength;
-        const int MaxTextChunkLength = AppDefaults.PngMaxTextChunkLength;
-        List<string> results = new();
+        var results = new List<string>();
+        
         try
         {
             using var fs = File.OpenRead(file);
-            Span<byte> sig = stackalloc byte[8];
-            if (fs.Read(sig) != 8) return results;
-            // Validate PNG signature: 89 50 4E 47 0D 0A 1A 0A
-            ReadOnlySpan<byte> pngSig = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-            if (!sig.SequenceEqual(pngSig)) return results;
+            if (!ValidatePngSignature(fs))
+                return results;
 
-            byte[] lenBuf = new byte[4];
-            byte[] typeBuf = new byte[4];
-            while (true)
-            {
-                if (fs.Read(lenBuf, 0, 4) != 4) break;
-                int length = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(lenBuf);
-                if (length < 0 || length > MaxChunkLength)
-                {
-                    // Malformed chunk; stop parsing to avoid endless loop
-                    break;
-                }
-                if (fs.Read(typeBuf, 0, 4) != 4) break;
-                string chunkType = Encoding.ASCII.GetString(typeBuf);
-
-                // If chunk is not relevant or too large, skip efficiently
-                if (length == 0)
-                {
-                    fs.Seek(4, SeekOrigin.Current); // skip CRC
-                    if (chunkType == "IEND") break;
-                    continue;
-                }
-
-                bool isTextual = chunkType is "tEXt" or "zTXt" or "iTXt";
-                if (!isTextual || length > MaxTextChunkLength)
-                {
-                    fs.Seek(length + 4, SeekOrigin.Current); // skip data + CRC
-                    if (chunkType == "IEND") break;
-                    continue;
-                }
-
-                var data = new byte[length];
-                int read = fs.Read(data, 0, length);
-                if (read != length) break;
-                fs.Seek(4, SeekOrigin.Current); // skip CRC
-
-                switch (chunkType)
-                {
-                    case "tEXt":
-                        {
-                            int sep = Array.IndexOf(data, (byte)0);
-                            if (sep >= 0 && sep < data.Length - 1)
-                                results.Add(Encoding.Latin1.GetString(data, sep + 1, data.Length - sep - 1));
-                            break;
-                        }
-                    case "zTXt":
-                        {
-                            int sep = Array.IndexOf(data, (byte)0);
-                            if (sep >= 0 && sep < data.Length - 2)
-                            {
-                                var compData = data[(sep + 2)..];
-                                try
-                                {
-                                    using var ms = new MemoryStream(compData, writable: false);
-                                    using var z = new ZLibStream(ms, CompressionMode.Decompress);
-                                    using var outMs = new MemoryStream();
-                                    z.CopyTo(outMs);
-                                    results.Add(Encoding.UTF8.GetString(outMs.ToArray()));
-                                }
-                                catch { }
-                            }
-                            break;
-                        }
-                    case "iTXt":
-                        {
-                            int idx = Array.IndexOf(data, (byte)0);
-                            if (idx >= 0 && idx + 5 < data.Length)
-                            {
-                                byte compressionFlag = data[idx + 1];
-                                byte compressionMethod = data[idx + 2];
-                                int pos = idx + 3;
-                                int langEnd = Array.IndexOf(data, (byte)0, pos); if (langEnd < 0) break; pos = langEnd + 1;
-                                int transEnd = Array.IndexOf(data, (byte)0, pos); if (transEnd < 0) break; pos = transEnd + 1;
-                                byte[] textBytes = data[pos..];
-                                try
-                                {
-                                    if (compressionFlag == 1 && compressionMethod == 0)
-                                    {
-                                        using var ms = new MemoryStream(textBytes, writable: false);
-                                        using var z = new ZLibStream(ms, CompressionMode.Decompress);
-                                        using var outMs = new MemoryStream();
-                                        z.CopyTo(outMs);
-                                        textBytes = outMs.ToArray();
-                                    }
-                                    results.Add(Encoding.UTF8.GetString(textBytes));
-                                }
-                                catch { }
-                            }
-                            break;
-                        }
-                }
-                if (chunkType == "IEND") break;
-            }
+            ProcessChunks(fs, results);
         }
         catch { }
+        
         return results;
+    }
+
+    private static bool ValidatePngSignature(FileStream fs)
+    {
+        Span<byte> signature = stackalloc byte[8];
+        if (fs.Read(signature) != 8)
+            return false;
+        
+        return signature.SequenceEqual(PngSignature);
+    }
+
+    private static void ProcessChunks(FileStream fs, List<string> results)
+    {
+        Span<byte> headerBuffer = stackalloc byte[8]; // 4 bytes length + 4 bytes type
+
+        while (true)
+        {
+            if (fs.Read(headerBuffer) != 8)
+                break;
+
+            int length = BinaryPrimitives.ReadInt32BigEndian(headerBuffer[..4]);
+            var chunkType = Encoding.ASCII.GetString(headerBuffer[4..]);
+
+            if (length < 0 || length > MaxChunkLength)
+                break; // Malformed chunk
+
+            if (chunkType == "IEND")
+                break;
+
+            if (length == 0)
+            {
+                fs.Seek(4, SeekOrigin.Current); // Skip CRC
+                continue;
+            }
+
+            if (!IsTextualChunk(chunkType) || length > MaxTextChunkLength)
+            {
+                fs.Seek(length + 4, SeekOrigin.Current); // Skip data + CRC
+                continue;
+            }
+
+            var data = new byte[length];
+            if (fs.Read(data, 0, length) != length)
+                break;
+            
+            fs.Seek(4, SeekOrigin.Current); // Skip CRC
+
+            var text = ParseTextChunk(chunkType, data);
+            if (!string.IsNullOrEmpty(text))
+                results.Add(text);
+        }
+    }
+
+    private static bool IsTextualChunk(string chunkType)
+        => chunkType is "tEXt" or "zTXt" or "iTXt";
+
+    private static string? ParseTextChunk(string chunkType, byte[] data)
+    {
+        return chunkType switch
+        {
+            "tEXt" => ParseTEXt(data),
+            "zTXt" => ParseZTXt(data),
+            "iTXt" => ParseITXt(data),
+            _ => null
+        };
+    }
+
+    private static string? ParseTEXt(byte[] data)
+    {
+        int separator = Array.IndexOf(data, (byte)0);
+        if (separator < 0 || separator >= data.Length - 1)
+            return null;
+        
+        return Encoding.Latin1.GetString(data, separator + 1, data.Length - separator - 1);
+    }
+
+    private static string? ParseZTXt(byte[] data)
+    {
+        int separator = Array.IndexOf(data, (byte)0);
+        if (separator < 0 || separator >= data.Length - 2)
+            return null;
+
+        try
+        {
+            var compressedData = data.AsSpan((separator + 2)..);
+            return DecompressZlib(compressedData);
+        }
+        catch { return null; }
+    }
+
+    private static string? ParseITXt(byte[] data)
+    {
+        int keywordEnd = Array.IndexOf(data, (byte)0);
+        if (keywordEnd < 0 || keywordEnd + 5 >= data.Length)
+            return null;
+
+        byte compressionFlag = data[keywordEnd + 1];
+        byte compressionMethod = data[keywordEnd + 2];
+        
+        int pos = keywordEnd + 3;
+        int langEnd = Array.IndexOf(data, (byte)0, pos);
+        if (langEnd < 0) return null;
+        
+        pos = langEnd + 1;
+        int transEnd = Array.IndexOf(data, (byte)0, pos);
+        if (transEnd < 0) return null;
+        
+        pos = transEnd + 1;
+        var textBytes = data.AsSpan(pos..);
+
+        try
+        {
+            if (compressionFlag == 1 && compressionMethod == 0)
+                return DecompressZlib(textBytes);
+            
+            return Encoding.UTF8.GetString(textBytes);
+        }
+        catch { return null; }
+    }
+
+    private static string DecompressZlib(ReadOnlySpan<byte> compressedData)
+    {
+        using var ms = new MemoryStream(compressedData.ToArray(), writable: false);
+        using var zlib = new ZLibStream(ms, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        zlib.CopyTo(output);
+        return Encoding.UTF8.GetString(output.ToArray());
     }
 }

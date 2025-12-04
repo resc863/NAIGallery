@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using Microsoft.UI.Xaml.Media; // ImageSource
+using Microsoft.UI.Xaml.Media;
 
 namespace NAIGallery.Models;
 
@@ -13,6 +13,10 @@ namespace NAIGallery.Models;
 /// </summary>
 public class ImageMetadata : INotifyPropertyChanged
 {
+    private const double DefaultAspectRatio = 1.0;
+    private const double MinAspectRatio = 0.1;
+    private const double MaxAspectRatio = 10.0;
+
     /// <summary>Absolute file path to the image on disk.</summary>
     public required string FilePath { get; set; }
 
@@ -68,7 +72,7 @@ public class ImageMetadata : INotifyPropertyChanged
     public ImageSource? Thumbnail
     {
         get => _thumbnail;
-        set { if (_thumbnail != value) { _thumbnail = value; OnPropertyChanged(); } }
+        set => SetProperty(ref _thumbnail, value);
     }
 
     private int? _thumbnailPixelWidth;
@@ -80,18 +84,24 @@ public class ImageMetadata : INotifyPropertyChanged
     public int? ThumbnailPixelWidth 
     { 
         get => _thumbnailPixelWidth;
-        set 
-        { 
-            if (_thumbnailPixelWidth != value) 
-            { 
-                _thumbnailPixelWidth = value; 
-                OnPropertyChanged(); 
-            } 
-        }
+        set => SetProperty(ref _thumbnailPixelWidth, value);
+    }
+
+    private bool _isLoadingThumbnail;
+    
+    /// <summary>
+    /// Indicates whether this item's thumbnail is currently being loaded/decoded.
+    /// Used for UI to show loading indicator only for items actually in the pipeline.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsLoadingThumbnail
+    {
+        get => _isLoadingThumbnail;
+        set => SetProperty(ref _isLoadingThumbnail, value);
     }
 
     // New: aspect ratio (width/height). Default 1.0 to avoid razor-thin placeholders before decode completes.
-    private double _aspectRatio = 1.0;
+    private double _aspectRatio = DefaultAspectRatio;
     
     /// <summary>
     /// Aspect ratio computed from OriginalWidth/OriginalHeight or cached value.
@@ -104,16 +114,18 @@ public class ImageMetadata : INotifyPropertyChanged
         {
             // Always compute from OriginalWidth/OriginalHeight if available
             if (OriginalWidth.HasValue && OriginalHeight.HasValue && OriginalHeight.Value > 0)
-            {
                 return (double)OriginalWidth.Value / OriginalHeight.Value;
-            }
-            return _aspectRatio <= 0 ? 1.0 : _aspectRatio;
+            
+            return _aspectRatio <= 0 ? DefaultAspectRatio : _aspectRatio;
         }
         set 
         { 
-            if (Math.Abs(_aspectRatio - value) > 0.001) 
-            { 
-                _aspectRatio = value <= 0 ? 1.0 : value;
+            var clampedValue = Math.Clamp(value, MinAspectRatio, MaxAspectRatio);
+            if (clampedValue <= 0) clampedValue = DefaultAspectRatio;
+            
+            if (Math.Abs(_aspectRatio - clampedValue) > 0.001)
+            {
+                _aspectRatio = clampedValue;
                 OnPropertyChanged();
             } 
         }
@@ -123,7 +135,18 @@ public class ImageMetadata : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>Raises <see cref="PropertyChanged"/>.</summary>
-    private void OnPropertyChanged([CallerMemberName] string? name=null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    private void OnPropertyChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return false;
+        
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
+    }
 }
 
 /// <summary>

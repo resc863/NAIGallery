@@ -17,6 +17,14 @@ public sealed partial class GalleryPage
     private const double PrefetchBufferFactor = 1.5; // extra viewport heights to prefetch
     private volatile int _idleBackfillCursor = 0; // progressive backfill pointer for remaining thumbnails
 
+    // Scroll throttling - 더 자주 업데이트하도록 간격 단축
+    private long _lastScrollProcessTicks = 0;
+    private const long MinScrollProcessIntervalTicks = TimeSpan.TicksPerMillisecond * 5; // ~200fps로 업데이트
+
+    // 연속 스크롤 감지를 위한 타이머
+    private long _lastScrollEventTicks = 0;
+    private const long ScrollIdleThresholdTicks = TimeSpan.TicksPerMillisecond * 80; // 80ms로 단축
+
     private void HookScroll()
     {
         try { _scrollViewer = RepeaterScroll; } catch { _scrollViewer = null; }
@@ -26,6 +34,10 @@ public sealed partial class GalleryPage
         _scrollViewer.ViewChanged += (s, args) =>
         {
             if (!_isLoaded) return;
+            
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            _lastScrollEventTicks = now;
+            
             double current = _scrollViewer.VerticalOffset;
             _scrollingUp = current < _lastOffsetForDir - 0.5; // small hysteresis
             _lastOffsetForDir = current;
@@ -34,39 +46,54 @@ public sealed partial class GalleryPage
 
             if (intermediate)
             {
-                _service.SetApplySuspended(true);
+                // 스크롤 중에도 썸네일 적용 허용 - 절대 중단하지 않음
                 _scrollIdleCts?.Cancel();
                 _scrollIdleCts = new CancellationTokenSource();
                 _idleFillCts?.Cancel();
-                EnqueueVisibleStrict();
-                // Keep viewport scheduling updated during active scroll so upward blanks fill sooner.
-                UpdateSchedulerViewport();
-                TryDrainVisibleDuringScroll();
+                
+                // 쓰로틀링된 스크롤 처리 - 더 자주 처리
+                if (now - _lastScrollProcessTicks >= MinScrollProcessIntervalTicks)
+                {
+                    _lastScrollProcessTicks = now;
+                    EnqueueVisibleStrict();
+                    UpdateSchedulerViewportInternal();
+                    
+                    // 스크롤 중에도 가시 영역의 썸네일 적용 허용
+                    _service.SetApplySuspended(false);
+                    TryDrainVisibleDuringScroll();
+                }
             }
             else
             {
+                // 스크롤 종료
                 EnqueueVisibleStrict();
-                UpdateSchedulerViewport();
+                UpdateSchedulerViewportInternal();
+                _service.SetApplySuspended(false);
+                _service.FlushApplyQueue();
             }
             _ = ProcessQueueAsync();
 
-            if (!intermediate)
+            // Idle 타이머 시작 - IsIntermediate와 관계없이 스크롤 이벤트가 멈추면 idle 처리
+            _scrollIdleCts?.Cancel();
+            _scrollIdleCts = new CancellationTokenSource();
+            var ct = _scrollIdleCts.Token;
+            _ = Task.Run(async () =>
             {
-                _scrollIdleCts?.Cancel();
-                _scrollIdleCts = new CancellationTokenSource();
-                var ct = _scrollIdleCts.Token;
-                _ = Task.Run(async () =>
+                try { await Task.Delay(60, ct); } catch { return; } // 60ms로 단축
+                if (ct.IsCancellationRequested) return;
+                
+                // 추가로 스크롤 이벤트가 없었는지 확인
+                long currentTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (currentTicks - _lastScrollEventTicks < ScrollIdleThresholdTicks - TimeSpan.TicksPerMillisecond * 30)
+                    return; // 아직 스크롤 중
+                
+                DispatcherQueue?.TryEnqueue(() =>
                 {
-                    try { await Task.Delay(50, ct); } catch { return; } // Reduced from 90ms to 50ms
-                    if (ct.IsCancellationRequested) return;
-                    DispatcherQueue.TryEnqueue(() =>
-                    {
-                        _service.SetApplySuspended(false);
-                        _service.FlushApplyQueue();
-                        StartIdleFill();
-                    });
+                    _service.SetApplySuspended(false);
+                    _service.FlushApplyQueue();
+                    StartIdleFill();
                 });
-            }
+            });
 
             _lastScrollOffset = current;
         };
@@ -78,7 +105,8 @@ public sealed partial class GalleryPage
         {
             if (ViewModel.Images.Count == 0) return;
             var set = new HashSet<ImageMetadata>();
-            for (int i = _viewStartIndex; i <= _viewEndIndex && i < ViewModel.Images.Count; i++)
+            int count = Math.Min(_viewEndIndex - _viewStartIndex + 1, 50); // 50개로 증가
+            for (int i = _viewStartIndex; i <= _viewEndIndex && i < ViewModel.Images.Count && set.Count < count; i++)
             {
                 if (i >= 0) set.Add(ViewModel.Images[i]);
             }
@@ -109,20 +137,21 @@ public sealed partial class GalleryPage
             if (token.IsCancellationRequested) { tcs.TrySetResult(null); return; }
             try
             {
-                var images = ViewModel.Images; // local snapshot reference
+                var images = ViewModel.Images;
                 int imageCount = images.Count;
                 if (_scrollViewer == null || imageCount == 0)
                 { tcs.TrySetResult(new IdleUiSnapshot { HasImages = false }); return; }
 
                 var snap = new IdleUiSnapshot { HasImages = true, DesiredWidth = GetDesiredDecodeWidth() };
 
-                // Realized tiles
+                // Realized tiles - limit iteration
                 try
                 {
                     var host = GetItemsHost();
                     if (host != null && host.Children.Count > 0)
                     {
-                        for (int c = 0; c < host.Children.Count; c++)
+                        int maxCheck = Math.Min(host.Children.Count, 150); // 150으로 증가
+                        for (int c = 0; c < maxCheck; c++)
                         {
                             if (host.Children[c] is FrameworkElement fe && fe.DataContext is ImageMetadata meta)
                             {
@@ -142,21 +171,26 @@ public sealed partial class GalleryPage
                 if (viewEnd >= imageCount) viewEnd = imageCount - 1;
                 if (viewEnd < viewStart) { viewStart = 0; viewEnd = -1; }
 
-                // Visible logical range
+                // Visible logical range - limit to reasonable count
+                int maxVisible = 80; // 80으로 증가
                 if (viewStart <= viewEnd && viewStart >= 0 && viewEnd < imageCount)
                 {
-                    for (int i = viewStart; i <= viewEnd; i++)
+                    int count = 0;
+                    for (int i = viewStart; i <= viewEnd && count < maxVisible; i++)
                     {
                         if (i < 0 || i >= imageCount) break;
                         var m = images[i];
                         int cur = m.ThumbnailPixelWidth ?? 0;
                         if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                        {
                             snap.MissingVisible.Add(m);
+                            count++;
+                        }
                     }
                 }
 
-                // Buffer prefetch indices (direction-biased)
-                int bufStartIndex = 0, bufEndIndex = -1; // capture for remaining ordering
+                // Buffer prefetch indices (direction-biased) - limit candidates
+                int bufStartIndex = 0, bufEndIndex = -1;
                 try
                 {
                     double viewport = _scrollViewer.ViewportHeight;
@@ -171,9 +205,12 @@ public sealed partial class GalleryPage
                     int bufEndRow = Math.Max(bufStartRow, (int)(bufferBottom / itemH));
                     bufStartIndex = Math.Max(0, bufStartRow * cols);
                     bufEndIndex = Math.Min((bufEndRow + 1) * cols - 1, imageCount - 1);
+                    
+                    int maxBuffer = 150; // 150으로 증가
+                    int bufferCount = 0;
                     if (bufStartIndex < imageCount && bufEndIndex >= 0)
                     {
-                        for (int i = bufStartIndex; i <= bufEndIndex; i++)
+                        for (int i = bufStartIndex; i <= bufEndIndex && bufferCount < maxBuffer; i++)
                         {
                             if (i >= imageCount) break;
                             if (i >= viewStart && i <= viewEnd) continue;
@@ -181,21 +218,25 @@ public sealed partial class GalleryPage
                             var m = images[i];
                             int cur = m.ThumbnailPixelWidth ?? 0;
                             if (m.Thumbnail == null || cur + 32 < snap.DesiredWidth)
+                            {
                                 snap.BufferCandidates.Add(m);
+                                bufferCount++;
+                            }
                         }
                     }
                 }
                 catch { }
 
-                // Remaining outside buffer (progressive backfill radiating outwards from viewport)
+                // Remaining outside buffer - limit for performance
                 try
                 {
                     int total = imageCount;
+                    int maxRemaining = 300; // 300으로 증가
                     if (total > 0 && viewEnd >= viewStart && viewStart >= 0)
                     {
                         int left = viewStart - 1;
                         int right = viewEnd + 1;
-                        while (left >= 0 || right < total)
+                        while ((left >= 0 || right < total) && snap.RemainingOrdered.Count < maxRemaining)
                         {
                             bool addedAny = false;
                             if (left >= 0 && (left < bufStartIndex || left > bufEndIndex))
@@ -209,7 +250,7 @@ public sealed partial class GalleryPage
                                 }
                                 left--; addedAny = true;
                             }
-                            if (right < total && (right < bufStartIndex || right > bufEndIndex))
+                            if (right < total && (right < bufStartIndex || right > bufEndIndex) && snap.RemainingOrdered.Count < maxRemaining)
                             {
                                 if (right >= 0)
                                 {
@@ -246,7 +287,7 @@ public sealed partial class GalleryPage
                 IdleUiSnapshot? snap = null;
                 try { snap = await CaptureIdleSnapshotAsync(token).ConfigureAwait(false); } catch { }
                 if (token.IsCancellationRequested) break;
-                if (snap == null || !snap.HasImages) { try { await Task.Delay(400, token); } catch { } continue; }
+                if (snap == null || !snap.HasImages) { try { await Task.Delay(150, token); } catch { } continue; }
 
                 bool work = false;
                 int desiredWidth = snap.DesiredWidth;
@@ -264,17 +305,19 @@ public sealed partial class GalleryPage
                     }
                     if (snap.BufferCandidates.Count > 0)
                     {
-                        foreach (var m in snap.BufferCandidates)
-                            (_service as ImageIndexService)?.Schedule(m, desiredWidth, false);
+                        // Schedule in larger batches for faster prefetch
+                        int batchSize = Math.Min(snap.BufferCandidates.Count, 64); // 64로 증가
+                        for (int i = 0; i < batchSize; i++)
+                            (_service as ImageIndexService)?.Schedule(snap.BufferCandidates[i], desiredWidth, false);
                         work = true;
                     }
-                    // Progressive backfill: schedule remaining (chunked) so eventually everything gets a thumbnail
+                    // Progressive backfill
                     if (!work && snap.RemainingOrdered.Count > 0)
                     {
                         int cursor = _idleBackfillCursor;
                         if (cursor < snap.RemainingOrdered.Count)
                         {
-                            int batch = Math.Min(48, snap.RemainingOrdered.Count - cursor);
+                            int batch = Math.Min(64, snap.RemainingOrdered.Count - cursor); // 64로 증가
                             for (int i = 0; i < batch; i++)
                             {
                                 var m = snap.RemainingOrdered[cursor + i];
@@ -294,19 +337,20 @@ public sealed partial class GalleryPage
 
                 if (!work) idleCyclesWithoutWork++; else idleCyclesWithoutWork = 0;
 
+                // 더 공격적인 idle fill 간격
                 int delay = idleCyclesWithoutWork switch
                 {
-                    < 2 => 80,  // Reduced from 140ms
-                    < 5 => 150, // Reduced from 250ms
-                    < 15 => 300, // Reduced from 500ms
-                    _ => 600 // Reduced from 1000ms
+                    < 2 => 30,   // 더 짧게
+                    < 5 => 60,
+                    < 15 => 120,
+                    _ => 250
                 };
                 try { await Task.Delay(delay, token); } catch { break; }
             }
         }, token);
     }
 
-    private void RequestReflow(int delayMs = 80)
+    private void RequestReflow(int delayMs = 60)
     {
         try { _reflowCts?.Cancel(); } catch { }
         _reflowCts = new CancellationTokenSource();
@@ -322,7 +366,7 @@ public sealed partial class GalleryPage
                     GalleryView?.InvalidateMeasure();
                     GalleryView?.InvalidateArrange();
                     EnqueueVisibleStrict();
-                    UpdateSchedulerViewport();
+                    UpdateSchedulerViewportInternal();
                     StartIdleFill();
                 }
                 catch { }
@@ -330,7 +374,7 @@ public sealed partial class GalleryPage
         });
     }
 
-    private void UpdateSchedulerViewport()
+    private void UpdateSchedulerViewportInternal()
     {
         try
         {
@@ -348,26 +392,25 @@ public sealed partial class GalleryPage
             int startIndex = Math.Max(0, startRow * cols);
             int endIndex = Math.Min((endRow + 1) * cols - 1, ViewModel.Images.Count - 1);
 
-            // Guard: if math overshoots (e.g. offset near extent end) startIndex can exceed endIndex -> negative capacity
             if (startIndex >= ViewModel.Images.Count || endIndex < startIndex)
             {
-                return; // nothing visible / safe early exit
+                return;
             }
 
-            int visibleCount = endIndex - startIndex + 1;
+            int visibleCount = Math.Min(endIndex - startIndex + 1, 150); // 150으로 증가
             var orderedVisible = new List<ImageMetadata>(visibleCount);
             if (_scrollingUp)
             {
-                // When scrolling up, prioritize from top to bottom to fill blanks at top quickly.
-                for (int i = startIndex; i <= endIndex; i++) orderedVisible.Add(ViewModel.Images[i]);
+                for (int i = startIndex; i <= endIndex && orderedVisible.Count < visibleCount; i++) 
+                    orderedVisible.Add(ViewModel.Images[i]);
             }
             else
             {
                 int mid = (startIndex + endIndex) / 2; int lo = mid; int hi = mid + 1;
-                while (lo >= startIndex || hi <= endIndex)
+                while ((lo >= startIndex || hi <= endIndex) && orderedVisible.Count < visibleCount)
                 {
                     if (lo >= startIndex) { orderedVisible.Add(ViewModel.Images[lo]); lo--; }
-                    if (hi <= endIndex) { orderedVisible.Add(ViewModel.Images[hi]); hi++; }
+                    if (hi <= endIndex && orderedVisible.Count < visibleCount) { orderedVisible.Add(ViewModel.Images[hi]); hi++; }
                 }
             }
 
@@ -377,8 +420,10 @@ public sealed partial class GalleryPage
             int bufEndRow = Math.Max(bufStartRow, (int)(bufferBottom / itemH));
             int bufStartIndex = Math.Max(0, bufStartRow * cols);
             int bufEndIndex = Math.Min((bufEndRow + 1) * cols - 1, ViewModel.Images.Count - 1);
-            var bufferList = new List<ImageMetadata>();
-            for (int i = bufStartIndex; i <= bufEndIndex; i++)
+            
+            int maxBuffer = 200; // 200으로 증가
+            var bufferList = new List<ImageMetadata>(Math.Min(bufEndIndex - bufStartIndex + 1, maxBuffer));
+            for (int i = bufStartIndex; i <= bufEndIndex && bufferList.Count < maxBuffer; i++)
             {
                 if (i >= startIndex && i <= endIndex) continue;
                 bufferList.Add(ViewModel.Images[i]);
@@ -386,9 +431,11 @@ public sealed partial class GalleryPage
 
             int desiredWidth = GetDesiredDecodeWidth();
             (_service as ImageIndexService)?.UpdateViewport(orderedVisible, bufferList, desiredWidth);
-            // Reset backfill cursor when viewport changes significantly
             _idleBackfillCursor = 0;
         }
         catch { }
     }
+
+    // Wrapper for external calls
+    private void UpdateSchedulerViewport() => UpdateSchedulerViewportInternal();
 }

@@ -1,63 +1,62 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Collections.Concurrent;
-using NAIGallery; // StringPool, AppDefaults
+using NAIGallery;
 using NAIGallery.Models;
 
 namespace NAIGallery.Services;
 
 /// <summary>
-/// 간단한 in-memory 토큰 색인입니다. ConcurrentDictionary 기반으로 lock-free에 가깝게 동작.
+/// Lock-free in-memory token search index using ConcurrentDictionary.
 /// </summary>
 internal sealed class TokenSearchIndex : ITokenSearchIndex
 {
-    // token -> set(ImageMetadata)
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<ImageMetadata, byte>> _index = new(StringComparer.Ordinal);
-    // meta -> tokens[] (마지막으로 색인된 토큰 스냅샷)
     private readonly ConcurrentDictionary<ImageMetadata, string[]> _metaTokens = new();
+
+    private static readonly char[] Separators = [',', ';', ' '];
 
     public void Index(ImageMetadata meta)
     {
-        if (meta == null) return;
+        if (meta is null) return;
+        
         var tokens = Tokenize(meta);
 
-        // 이전 토큰 제거
+        // Remove old tokens
         if (_metaTokens.TryGetValue(meta, out var oldTokens))
         {
-            foreach (var t in oldTokens)
-            {
-                if (_index.TryGetValue(t, out var set))
-                {
-                    set.TryRemove(meta, out _);
-                    if (set.IsEmpty)
-                        _index.TryRemove(t, out _);
-                }
-            }
+            RemoveTokens(meta, oldTokens);
         }
 
+        // Add new tokens
         _metaTokens[meta] = tokens;
-        foreach (var t in tokens)
+        foreach (var token in tokens)
         {
-            var set = _index.GetOrAdd(t, _ => new ConcurrentDictionary<ImageMetadata, byte>());
+            var set = _index.GetOrAdd(token, _ => new ConcurrentDictionary<ImageMetadata, byte>());
             set[meta] = 0;
         }
     }
 
     public void Remove(ImageMetadata meta)
     {
-        if (meta == null) return;
+        if (meta is null) return;
+        
         if (_metaTokens.TryRemove(meta, out var tokens))
         {
-            foreach (var t in tokens)
+            RemoveTokens(meta, tokens);
+        }
+    }
+
+    private void RemoveTokens(ImageMetadata meta, string[] tokens)
+    {
+        foreach (var token in tokens)
+        {
+            if (_index.TryGetValue(token, out var set))
             {
-                if (_index.TryGetValue(t, out var set))
-                {
-                    set.TryRemove(meta, out _);
-                    if (set.IsEmpty)
-                        _index.TryRemove(t, out _);
-                }
+                set.TryRemove(meta, out _);
+                if (set.IsEmpty)
+                    _index.TryRemove(token, out _);
             }
         }
     }
@@ -65,11 +64,12 @@ internal sealed class TokenSearchIndex : ITokenSearchIndex
     public IReadOnlyCollection<ImageMetadata> QueryTokens(IEnumerable<string> tokens)
     {
         var result = new HashSet<ImageMetadata>();
-        foreach (var t in tokens)
+        foreach (var token in tokens)
         {
-            if (_index.TryGetValue(t, out var set))
+            if (_index.TryGetValue(token, out var set))
             {
-                foreach (var m in set.Keys) result.Add(m);
+                foreach (var meta in set.Keys) 
+                    result.Add(meta);
             }
         }
         return result;
@@ -77,38 +77,58 @@ internal sealed class TokenSearchIndex : ITokenSearchIndex
 
     public IEnumerable<string> Suggest(string prefix, int limit = 20)
     {
-        if (string.IsNullOrWhiteSpace(prefix)) return Enumerable.Empty<string>();
-        prefix = prefix.ToLowerInvariant();
-        int cap = Math.Min(limit, AppDefaults.SuggestionLimit);
+        if (string.IsNullOrWhiteSpace(prefix)) 
+            return [];
+        
+        var lowerPrefix = prefix.ToLowerInvariant();
+        var cap = Math.Min(limit, AppDefaults.SuggestionLimit);
+        
         return _index.Keys
-                     .Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                     .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
-                     .Take(cap)
-                     .ToArray();
+            .Where(k => k.StartsWith(lowerPrefix, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+            .Take(cap)
+            .ToArray();
     }
 
-    private static string[] Tokenize(ImageMetadata m)
+    private static string[] Tokenize(ImageMetadata meta)
     {
-        var hs = new HashSet<string>(StringComparer.Ordinal);
-        void Add(string? text)
+        var tokens = new HashSet<string>(StringComparer.Ordinal);
+        
+        AddTokens(tokens, meta.Tags);
+        AddToken(tokens, meta.Prompt);
+        AddToken(tokens, meta.NegativePrompt);
+        AddToken(tokens, meta.BasePrompt);
+        AddToken(tokens, meta.BaseNegativePrompt);
+        
+        if (meta.CharacterPrompts is not null)
         {
-            if (string.IsNullOrWhiteSpace(text)) return;
-            foreach (var tok in text.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            foreach (var cp in meta.CharacterPrompts)
             {
-                if (tok.Length < AppDefaults.TokenMinLen || tok.Length > AppDefaults.TokenMaxLen) continue;
-                var low = tok.ToLowerInvariant();
-                hs.Add(StringPool.Intern(low));
+                AddToken(tokens, cp.Prompt);
+                AddToken(tokens, cp.NegativePrompt);
             }
         }
-        foreach (var t in m.Tags) Add(t);
-        Add(m.Prompt); Add(m.NegativePrompt); Add(m.BasePrompt); Add(m.BaseNegativePrompt);
-        if (m.CharacterPrompts != null)
+        
+        return [.. tokens];
+    }
+
+    private static void AddTokens(HashSet<string> tokens, IEnumerable<string>? texts)
+    {
+        if (texts is null) return;
+        foreach (var text in texts)
+            AddToken(tokens, text);
+    }
+
+    private static void AddToken(HashSet<string> tokens, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        
+        foreach (var segment in text.Split(Separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
-            foreach (var cp in m.CharacterPrompts)
-            {
-                Add(cp.Prompt); Add(cp.NegativePrompt);
-            }
+            if (segment.Length < AppDefaults.TokenMinLen || segment.Length > AppDefaults.TokenMaxLen) 
+                continue;
+            
+            tokens.Add(StringPool.Intern(segment.ToLowerInvariant()));
         }
-        return hs.ToArray();
     }
 }

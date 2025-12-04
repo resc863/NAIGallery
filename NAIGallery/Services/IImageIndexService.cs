@@ -60,4 +60,10 @@ public interface IImageIndexService
     
     /// <summary>Event raised when the index changes (items added/removed/updated).</summary>
     event EventHandler? IndexChanged;
+    
+    /// <summary>
+    /// Event raised when a thumbnail is successfully applied to an ImageMetadata.
+    /// Subscribers can use this to force UI refresh for virtualized containers.
+    /// </summary>
+    event Action<ImageMetadata>? ThumbnailApplied;
 }

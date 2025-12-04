@@ -60,10 +60,10 @@
                                     PointerEntered="Tile_PointerEntered"
                                     PointerExited="Tile_PointerExited">
                                 <Grid Background="Transparent">
-                                    <!-- Placeholder for loading state -->
+                                    <!-- Placeholder for loading state - 실제 로딩 중인 항목만 표시 -->
                                     <Grid x:Name="PlaceholderGrid"
                                           Background="#10808080"
-                                          Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToVisibilityConverter}}">
+                                          Visibility="{x:Bind IsLoadingThumbnail, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
                                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
                                             <ProgressRing IsActive="True" Width="24" Height="24" />
                                             <TextBlock Text="로딩 중..."
@@ -91,7 +91,7 @@
                                             Padding="4"
                                             CornerRadius="0,0,4,4"
                                             IsHitTestVisible="False"
-                                            Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToCollapsedConverter}}">
+                                            Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToCollapsedConverter}, ConverterParameter=Invert}">
                                         <TextBlock Text="{x:Bind Prompt, Mode=OneWay}"
                                                    Foreground="White"
                                                    FontSize="12"

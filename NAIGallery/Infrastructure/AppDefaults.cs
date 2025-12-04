@@ -6,26 +6,58 @@ namespace NAIGallery;
 /// </summary>
 internal static class AppDefaults
 {
-    // Thumbnails
-    public const int DefaultThumbnailCapacityBytes = 5000; // logical capacity hint; actual bytes managed internally
+    #region Thumbnail Cache
+    
+    /// <summary>Logical capacity hint for thumbnail cache.</summary>
+    public const int DefaultThumbnailCapacityBytes = 5000;
+    
+    /// <summary>Minimum allowed thumbnail cache capacity.</summary>
     public const int MinThumbnailCacheCapacity = 100;
+    
+    /// <summary>Minimum size for small thumbnails (progressive loading).</summary>
     public const int SmallThumbMin = 96;
+    
+    /// <summary>Maximum size for small thumbnails (progressive loading).</summary>
     public const int SmallThumbMax = 160;
-    public const int DrainBatch = 16; // Increased from 9 to 16 for better throughput
+    
+    /// <summary>Number of thumbnails to apply per UI drain batch.</summary>
+    public const int DrainBatch = 16; // Increased for faster thumbnail application
+    
+    #endregion
 
-    // UI responsiveness - optimized for smooth experience
-    public const int UiPulsePeriodMs = 100;              // Reduced from 150ms to 100ms for faster response
-    public const double UiLagBusyThresholdMs = 50;       // Increased from 40ms to 50ms to reduce throttling
-    public const double UiLagEmaBusyThresholdMs = 30;    // Increased from 25ms to 30ms for smoother experience
+    #region UI Responsiveness
+    
+    /// <summary>UI pulse monitoring interval in milliseconds.</summary>
+    public const int UiPulsePeriodMs = 100;
+    
+    /// <summary>Instant lag threshold to consider UI busy (ms). Relaxed from 50 to 80.</summary>
+    public const double UiLagBusyThresholdMs = 80;
+    
+    /// <summary>EMA lag threshold to consider UI busy (ms). Relaxed from 35 to 50.</summary>
+    public const double UiLagEmaBusyThresholdMs = 50;
+    
+    #endregion
 
-    // PNG text chunk parsing limits
-    public const int PngMaxChunkLength = 64 * 1024 * 1024;  // 64MB
-    public const int PngMaxTextChunkLength = 4 * 1024 * 1024; // 4MB
+    #region PNG Parsing
+    
+    /// <summary>Maximum PNG chunk size to parse (64MB).</summary>
+    public const int PngMaxChunkLength = 64 * 1024 * 1024;
+    
+    /// <summary>Maximum text chunk size to parse (4MB).</summary>
+    public const int PngMaxTextChunkLength = 4 * 1024 * 1024;
+    
+    #endregion
 
-    // Tokenization
+    #region Search & Tokenization
+    
+    /// <summary>Minimum token length for indexing.</summary>
     public const int TokenMinLen = 2;
+    
+    /// <summary>Maximum token length for indexing.</summary>
     public const int TokenMaxLen = 64;
-
-    // Suggestions
+    
+    /// <summary>Maximum number of tag suggestions to return.</summary>
     public const int SuggestionLimit = 20;
+    
+    #endregion
 }

@@ -109,7 +109,12 @@ public sealed partial class GalleryPage : Page
             ViewModel = new GalleryViewModel(_service);
             Application.Current.Resources["GlobalGalleryVM"] = ViewModel;
         }
-        try { _service.InitializeDispatcher(global::Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()); } catch { }
+        
+        // DispatcherQueue 설정 - UI 스레드에서 호출되므로 항상 유효
+        var dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        ViewModel.SetDispatcherQueue(dispatcherQueue);
+        
+        try { _service.InitializeDispatcher(dispatcherQueue); } catch { }
         DataContext = ViewModel;
 
         TileLineHeight = _baseItemSize;
@@ -118,6 +123,10 @@ public sealed partial class GalleryPage : Page
         ViewModel.ImagesChanged += OnImagesChanged;
         ViewModel.BeforeCollectionRefresh += OnBeforeCollectionRefresh;
         ViewModel.AfterCollectionRefresh += OnAfterCollectionRefresh;
+        
+        // 썸네일 적용 이벤트 구독 - 가상화된 컨테이너 갱신용
+        _service.ThumbnailApplied += OnThumbnailApplied;
+        
         Loaded += GalleryPage_Loaded;
         Unloaded += GalleryPage_Unloaded;
         SizeChanged += Gallery_SizeChanged;
@@ -235,62 +244,67 @@ public sealed partial class GalleryPage : Page
                 savedScrollOffset = _scrollViewer.VerticalOffset;
             }
             
-            // 1. 강제 UI 새로고침
-            _service.SetApplySuspended(false);
-            _service.FlushApplyQueue();
+            // 1. 파이프라인 일시 중지
+            _service.SetApplySuspended(true);
             
-            // 2. ItemsRepeater의 레이아웃 강제 갱신
-            if (GalleryView != null)
-            {
-                // ItemsRepeater의 레이아웃을 강제로 다시 측정하도록 트리거
-                var layout = GalleryView.Layout;
-                GalleryView.Layout = null;
-                GalleryView.UpdateLayout();
-                GalleryView.Layout = layout;
-                GalleryView.InvalidateMeasure();
-                GalleryView.InvalidateArrange();
-            }
+            // 2. 스케줄링 상태 초기화 (이전에 실패하거나 대기 중이던 아이템들 다시 시도 가능)
+            (_service as ImageIndexService)?.ResetPendingState();
             
-            // 3. 바인딩 강제 업데이트 - ItemsSource를 일시적으로 null로 했다가 복원
-            if (ViewModel?.Images != null)
+            // 3. UI 스레드에서 즉시 실행
+            if (ViewModel?.Images != null && GalleryView != null)
             {
-                var items = ViewModel.Images;
-                
-                // UI 스레드에서 즉시 실행
                 DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, async () =>
                 {
                     try
                     {
-                        // ItemsSource를 null로 설정하여 바인딩 해제
-                        if (GalleryView != null)
+                        // 레이아웃만 갱신 (ItemsSource는 유지)
+                        GalleryView.InvalidateMeasure();
+                        GalleryView.InvalidateArrange();
+                        GalleryView.UpdateLayout();
+                        
+                        // 잠시 대기 후 스크롤 위치 복원
+                        await Task.Delay(30);
+                        
+                        if (_scrollViewer != null && savedScrollOffset > 0)
                         {
-                            GalleryView.ItemsSource = null;
-                            GalleryView.UpdateLayout();
-                            
-                            // ItemsSource를 다시 설정하여 완전한 재바인딩
-                            GalleryView.ItemsSource = items;
-                            GalleryView.InvalidateMeasure();
-                            
-                            // 레이아웃이 완료될 때까지 잠시 대기
-                            await Task.Delay(50);
-                            
-                            // 스크롤 위치 복원
-                            if (_scrollViewer != null && savedScrollOffset > 0)
+                            _scrollViewer.ChangeView(null, savedScrollOffset, null, disableAnimation: true);
+                        }
+                        
+                        // 4. 파이프라인 재개
+                        _service.SetApplySuspended(false);
+                        _service.FlushApplyQueue();
+                        
+                        // 5. 빈 칸 강제 재로드 - 가시 영역에서 썸네일이 없는 아이템 수집
+                        var missingThumbnails = new System.Collections.Generic.List<ImageMetadata>();
+                        int desiredWidth = GetDesiredDecodeWidth();
+                        
+                        // 가시 영역 범위 확인
+                        int startIdx = Math.Max(0, _viewStartIndex);
+                        int endIdx = Math.Min(_viewEndIndex, ViewModel.Images.Count - 1);
+                        
+                        for (int i = startIdx; i <= endIdx && i < ViewModel.Images.Count; i++)
+                        {
+                            var meta = ViewModel.Images[i];
+                            // 썸네일이 없거나 해상도가 부족한 아이템 수집
+                            if (meta.Thumbnail == null || (meta.ThumbnailPixelWidth ?? 0) + 32 < desiredWidth)
                             {
-                                _scrollViewer.ChangeView(null, savedScrollOffset, null, disableAnimation: true);
+                                missingThumbnails.Add(meta);
                             }
                         }
                         
-                        // 4. 가시 영역 썸네일 즉시 로드
+                        // 빈 칸들을 강제로 우선순위 큐에 추가
+                        if (missingThumbnails.Count > 0)
+                        {
+                            (_service as ImageIndexService)?.BoostVisible(missingThumbnails, desiredWidth);
+                        }
+                        
+                        // 6. 가시 영역 썸네일 즉시 로드
                         EnqueueVisibleStrict();
                         _ = ProcessQueueAsync();
                         
-                        // 5. Viewport 업데이트 및 IdleFill 재시작
+                        // 7. Viewport 업데이트 및 IdleFill 재시작
                         UpdateSchedulerViewport();
                         StartIdleFill();
-                        
-                        // 6. 비동기로 전체 프라이밍 수행
-                        _ = PrimeInitialAsync();
                     }
                     catch { }
                 });
@@ -328,15 +342,27 @@ public sealed partial class GalleryPage : Page
     {
         _initialPrimed = false;
         
-        // 이미지 목록이 변경되면 즉시 가시 영역 썸네일 로드
-        EnqueueVisibleStrict();
-        _ = ProcessQueueAsync();
-        UpdateSchedulerViewport();
-        
-        // UI 강제 갱신 (인덱싱 중에도 새로 추가된 아이템 즉시 표시)
-        if (GalleryView != null && DispatcherQueue != null)
+        // UI 스레드에서 실행되도록 보장
+        if (DispatcherQueue?.HasThreadAccess != true)
         {
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, () =>
+            DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, () => OnImagesChangedCore());
+            return;
+        }
+        
+        OnImagesChangedCore();
+    }
+    
+    private void OnImagesChangedCore()
+    {
+        try
+        {
+            // 이미지 목록이 변경되면 즉시 가시 영역 썸네일 로드
+            EnqueueVisibleStrict();
+            _ = ProcessQueueAsync();
+            UpdateSchedulerViewport();
+            
+            // UI 강제 갱신 (인덱싱 중에도 새로 추가된 아이템 즉시 표시)
+            if (GalleryView != null)
             {
                 try
                 {
@@ -346,19 +372,20 @@ public sealed partial class GalleryPage : Page
                     GalleryView.UpdateLayout();
                 }
                 catch { }
-            });
+            }
+            
+            // 인덱싱 중이 아닐 때만 전체 프라이밍 수행
+            if (!ViewModel.IsIndexing)
+            {
+                _ = PrimeInitialAsync();
+            }
+            else
+            {
+                // 인덱싱 중에는 가시 영역만 즉시 로드
+                _ = PrimeVisibleOnlyAsync();
+            }
         }
-        
-        // 인덱싱 중이 아닐 때만 전체 프라이밍 수행
-        if (!ViewModel.IsIndexing)
-        {
-            _ = PrimeInitialAsync();
-        }
-        else
-        {
-            // 인덱싱 중에는 가시 영역만 즉시 로드
-            _ = PrimeVisibleOnlyAsync();
-        }
+        catch { }
     }
     
     private async Task PrimeVisibleOnlyAsync()

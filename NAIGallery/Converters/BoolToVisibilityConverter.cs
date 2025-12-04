@@ -5,22 +5,22 @@ using System;
 namespace NAIGallery.Converters;
 
 /// <summary>
-/// Converts null values to Visibility states.
-/// Default: null ¡æ Visible, non-null ¡æ Collapsed (useful for loading labels).
-/// With parameter "Invert": null ¡æ Collapsed, non-null ¡æ Visible.
+/// Converts boolean values to Visibility states.
+/// Default: true ¡æ Visible, false ¡æ Collapsed.
+/// With parameter "Invert": true ¡æ Collapsed, false ¡æ Visible.
 /// </summary>
-public class NullToVisibilityConverter : IValueConverter
+public class BoolToVisibilityConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language)
     {
         bool invert = parameter is string s && 
                       s.Equals("Invert", StringComparison.OrdinalIgnoreCase);
         
-        bool isNull = value == null;
+        bool boolValue = value is bool b && b;
         
-        return invert 
-            ? (isNull ? Visibility.Collapsed : Visibility.Visible)
-            : (isNull ? Visibility.Visible : Visibility.Collapsed);
+        if (invert) boolValue = !boolValue;
+        
+        return boolValue ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, string language)

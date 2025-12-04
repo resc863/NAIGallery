@@ -52,9 +52,18 @@ public class ImageIndexService : IImageIndexService
         _logger = logger;
         _thumbPipeline = new ThumbnailPipeline(_thumbCapacity, logger);
         _metadataExtractor = extractor ?? new PngMetadataExtractor();
+        
+        // ThumbnailApplied 이벤트 전달
+        _thumbPipeline.ThumbnailApplied += meta => ThumbnailApplied?.Invoke(meta);
     }
 
     public IEnumerable<ImageMetadata> All => _index.Values;
+    
+    /// <summary>
+    /// Event raised when a thumbnail is successfully applied to an ImageMetadata.
+    /// Subscribers can use this to force UI refresh for virtualized containers.
+    /// </summary>
+    public event Action<ImageMetadata>? ThumbnailApplied;
 
     public void InitializeDispatcher(DispatcherQueue dispatcherQueue)
     {
@@ -630,4 +639,10 @@ public class ImageIndexService : IImageIndexService
     public void Schedule(ImageMetadata meta, int width, bool highPriority = false) => _thumbPipeline.Schedule(meta, width, highPriority);
     public void BoostVisible(IEnumerable<ImageMetadata> metas, int width) => _thumbPipeline.BoostVisible(metas, width);
     public void UpdateViewport(IReadOnlyList<ImageMetadata> orderedVisible, IReadOnlyList<ImageMetadata> bufferItems, int width) => _thumbPipeline.UpdateViewport(orderedVisible, bufferItems, width);
+    
+    /// <summary>
+    /// Resets pending/inflight state in thumbnail pipeline to allow re-scheduling of items.
+    /// Call this when user explicitly requests a UI refresh.
+    /// </summary>
+    public void ResetPendingState() => _thumbPipeline.ResetPendingState();
 }
