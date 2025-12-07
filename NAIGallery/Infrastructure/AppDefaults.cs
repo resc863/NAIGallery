@@ -21,20 +21,20 @@ internal static class AppDefaults
     public const int SmallThumbMax = 160;
     
     /// <summary>Number of thumbnails to apply per UI drain batch.</summary>
-    public const int DrainBatch = 16; // Increased for faster thumbnail application
+    public const int DrainBatch = 8; // Reduced batch size for thumbnails
     
     #endregion
 
     #region UI Responsiveness
     
     /// <summary>UI pulse monitoring interval in milliseconds.</summary>
-    public const int UiPulsePeriodMs = 100;
+    public const int UiPulsePeriodMs = 120; // Increased pulse period
     
-    /// <summary>Instant lag threshold to consider UI busy (ms). Relaxed from 50 to 80.</summary>
-    public const double UiLagBusyThresholdMs = 80;
+    /// <summary>Instant lag threshold to consider UI busy (ms). Sensitive adjustment.</summary>
+    public const double UiLagBusyThresholdMs = 50; // Lowered threshold for UI lag
     
-    /// <summary>EMA lag threshold to consider UI busy (ms). Relaxed from 35 to 50.</summary>
-    public const double UiLagEmaBusyThresholdMs = 50;
+    /// <summary>EMA lag threshold to consider UI busy (ms). Sensitive adjustment.</summary>
+    public const double UiLagEmaBusyThresholdMs = 35; // Lowered EMA threshold for UI lag
     
     #endregion
 

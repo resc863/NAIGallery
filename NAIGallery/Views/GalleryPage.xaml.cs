@@ -250,67 +250,94 @@ public sealed partial class GalleryPage : Page
             // 2. 스케줄링 상태 초기화 (이전에 실패하거나 대기 중이던 아이템들 다시 시도 가능)
             (_service as ImageIndexService)?.ResetPendingState();
             
-            // 3. UI 스레드에서 즉시 실행
+            // 3. 모든 현재 메타데이터의 썸네일 상태 초기화 (강제 재로드를 위해)
+            if (ViewModel?.Images != null)
+            {
+                foreach (var meta in ViewModel.Images)
+                {
+                    // 썸네일 픽셀 너비만 초기화 (Thumbnail 객체는 유지하여 깜빡임 방지)
+                    // 이렇게 하면 파이프라인이 해당 아이템을 다시 스케줄링할 수 있음
+                    meta.ThumbnailPixelWidth = 0;
+                }
+            }
+            
+            // 4. UI 스레드에서 즉시 실행
             if (ViewModel?.Images != null && GalleryView != null)
             {
                 DispatcherQueue?.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.High, async () =>
                 {
                     try
                     {
-                        // 레이아웃만 갱신 (ItemsSource는 유지)
+                        // 레이아웃 완전 갱신
+                        _itemsHost = null; // 캐시된 ItemsHost 초기화
                         GalleryView.InvalidateMeasure();
                         GalleryView.InvalidateArrange();
                         GalleryView.UpdateLayout();
                         
                         // 잠시 대기 후 스크롤 위치 복원
-                        await Task.Delay(30);
+                        await Task.Delay(50);
                         
                         if (_scrollViewer != null && savedScrollOffset > 0)
                         {
                             _scrollViewer.ChangeView(null, savedScrollOffset, null, disableAnimation: true);
                         }
                         
-                        // 4. 파이프라인 재개
+                        // 5. 파이프라인 재개
                         _service.SetApplySuspended(false);
                         _service.FlushApplyQueue();
                         
-                        // 5. 빈 칸 강제 재로드 - 가시 영역에서 썸네일이 없는 아이템 수집
-                        var missingThumbnails = new System.Collections.Generic.List<ImageMetadata>();
-                        int desiredWidth = GetDesiredDecodeWidth();
+                        // 6. 뷰포트 범위 재계산
+                        EnqueueVisibleStrict();
                         
-                        // 가시 영역 범위 확인
+                        // 7. 가시 영역 아이템 강제 로드
+                        int desiredWidth = GetDesiredDecodeWidth();
                         int startIdx = Math.Max(0, _viewStartIndex);
                         int endIdx = Math.Min(_viewEndIndex, ViewModel.Images.Count - 1);
                         
+                        var visibleItems = new System.Collections.Generic.List<ImageMetadata>();
                         for (int i = startIdx; i <= endIdx && i < ViewModel.Images.Count; i++)
                         {
-                            var meta = ViewModel.Images[i];
-                            // 썸네일이 없거나 해상도가 부족한 아이템 수집
-                            if (meta.Thumbnail == null || (meta.ThumbnailPixelWidth ?? 0) + 32 < desiredWidth)
-                            {
-                                missingThumbnails.Add(meta);
-                            }
+                            visibleItems.Add(ViewModel.Images[i]);
                         }
                         
-                        // 빈 칸들을 강제로 우선순위 큐에 추가
-                        if (missingThumbnails.Count > 0)
+                        // 강제 우선순위 부스트
+                        if (visibleItems.Count > 0)
                         {
-                            (_service as ImageIndexService)?.BoostVisible(missingThumbnails, desiredWidth);
+                            (_service as ImageIndexService)?.BoostVisible(visibleItems, desiredWidth);
                         }
                         
-                        // 6. 가시 영역 썸네일 즉시 로드
-                        EnqueueVisibleStrict();
+                        // 8. 즉시 프리로드 시작
                         _ = ProcessQueueAsync();
                         
-                        // 7. Viewport 업데이트 및 IdleFill 재시작
-                        UpdateSchedulerViewport();
+                        // 9. 버퍼 영역까지 포함한 프리로드
+                        int bufferSize = Math.Max(20, (endIdx - startIdx + 1));
+                        var bufferStart = Math.Max(0, startIdx - bufferSize);
+                        var bufferEnd = Math.Min(ViewModel.Images.Count - 1, endIdx + bufferSize);
+                        
+                        var bufferItems = new System.Collections.Generic.List<ImageMetadata>();
+                        for (int i = bufferStart; i <= bufferEnd && i < ViewModel.Images.Count; i++)
+                        {
+                            if (i < startIdx || i > endIdx) // 가시 영역 제외
+                                bufferItems.Add(ViewModel.Images[i]);
+                        }
+                        
+                        // Viewport 업데이트 (가시 + 버퍼)
+                        (_service as ImageIndexService)?.UpdateViewport(visibleItems, bufferItems, desiredWidth);
+                        
+                        // 10. IdleFill 재시작
                         StartIdleFill();
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[RefreshUI] Error: {ex.Message}");
+                    }
                 });
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[RefreshUI] Outer Error: {ex.Message}");
+        }
     }
 
     private void SortFieldCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

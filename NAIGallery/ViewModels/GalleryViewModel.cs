@@ -107,6 +107,20 @@ public partial class GalleryViewModel : ObservableObject
             _dispatcherQueue.TryEnqueue(() => action());
     }
 
+    /// <summary>
+    /// Enqueues an action with Low priority to avoid layout conflicts.
+    /// </summary>
+    private void RunOnDispatcherDeferred(Action action)
+    {
+        if (_dispatcherQueue is null)
+        {
+            action();
+            return;
+        }
+        
+        _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => action());
+    }
+
     public IAsyncRelayCommand<string> IndexFolderCommand => new AsyncRelayCommand<string>(IndexFolderAsync);
 
     partial void OnSearchQueryChanged(string value)
@@ -186,15 +200,19 @@ public partial class GalleryViewModel : ObservableObject
     {
         if (_lastSearch.Count == 0) return;
         
-        RunOnDispatcher(() =>
+        RunOnDispatcherDeferred(() =>
         {
             try
             {
+                BeforeCollectionRefresh?.Invoke(this, EventArgs.Empty);
+                
                 var sorted = Sort(_lastSearch).ToList();
                 Images.Clear();
                 foreach (var m in sorted) 
                     Images.Add(m);
                 ImagesView.RefreshSorting();
+                
+                AfterCollectionRefresh?.Invoke(this, EventArgs.Empty);
                 ImagesChanged?.Invoke(this, EventArgs.Empty);
             }
             catch { /* UI collection manipulation exception */ }
@@ -224,7 +242,7 @@ public partial class GalleryViewModel : ObservableObject
             
             var sorted = Sort(results).ToList();
             
-            RunOnDispatcher(() => UpdateImagesCollection(sorted));
+            RunOnDispatcherDeferred(() => UpdateImagesCollection(sorted));
         }
         catch (OperationCanceledException) { }
     }
@@ -233,12 +251,16 @@ public partial class GalleryViewModel : ObservableObject
     {
         try
         {
+            BeforeCollectionRefresh?.Invoke(this, EventArgs.Empty);
+            
             // 컬렉션 일괄 업데이트
             Images.Clear();
             foreach (var m in sorted) 
                 Images.Add(m);
             
             ImagesView.RefreshSorting();
+            
+            AfterCollectionRefresh?.Invoke(this, EventArgs.Empty);
             ImagesChanged?.Invoke(this, EventArgs.Empty);
         }
         catch { /* UI collection manipulation exception */ }

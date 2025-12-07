@@ -8,62 +8,89 @@ using NAIGallery.Models;
 namespace NAIGallery.Services;
 
 /// <summary>
-/// Abstraction over the image indexing & thumbnail pipeline to decouple UI/pages from the concrete implementation
-/// and enable easier unit testing/mocking.
+/// Abstraction over the image indexing & thumbnail pipeline.
+/// Decouples UI/pages from concrete implementation and enables easier testing.
 /// </summary>
 public interface IImageIndexService
 {
+    #region Index Access
+    
     /// <summary>All indexed metadata entries (unordered snapshot view).</summary>
     IEnumerable<ImageMetadata> All { get; }
-
-    /// <summary>Index (or re-index) a folder recursively.</summary>
-    Task IndexFolderAsync(string folder, IProgress<double>? progress = null, CancellationToken ct = default);
-
-    /// <summary>Search by tag/prompt tokens.</summary>
-    IEnumerable<ImageMetadata> SearchByTag(string query);
-
-    /// <summary>Search with configurable options for AND/OR and partial matching.</summary>
-    IEnumerable<ImageMetadata> Search(string query, bool andMode, bool partialMode);
-
-    /// <summary>Get tag suggestions based on a prefix.</summary>
-    IEnumerable<string> SuggestTags(string prefix);
-
-    /// <summary>Ensure a thumbnail of at least the given width is available (progressive upgrade allowed).</summary>
-    Task EnsureThumbnailAsync(ImageMetadata meta, int decodeWidth = 256, CancellationToken ct = default, bool allowDownscale = false);
-
-    /// <summary>Preload thumbnails for a collection of metadata items.</summary>
-    Task PreloadThumbnailsAsync(IEnumerable<ImageMetadata> items, int decodeWidth = 256, CancellationToken ct = default, int maxParallelism = 0);
-
+    
     /// <summary>Lookup an item by absolute path.</summary>
     bool TryGet(string path, out ImageMetadata? meta);
+    
+    /// <summary>Get items sorted by file path.</summary>
+    IReadOnlyList<ImageMetadata> GetSortedByFilePath();
+    
+    #endregion
 
-    /// <summary>Initialize UI dispatcher used for marshaling UI-bound thumbnail work.</summary>
-    void InitializeDispatcher(DispatcherQueue dispatcherQueue);
-
-    /// <summary>Suspend/resume applying decoded thumbnails to bound metadata objects.</summary>
-    void SetApplySuspended(bool suspended);
-
-    /// <summary>Force draining any queued apply work.</summary>
-    void FlushApplyQueue();
-
-    /// <summary>Apply thumbnails immediately for the provided visible set when suspended.</summary>
-    void DrainVisible(HashSet<ImageMetadata> visible);
-
-    /// <summary>Reset and clear in-memory thumbnail cache.</summary>
-    void ClearThumbnailCache();
-
-    /// <summary>Adjust thumbnail cache capacity (entry count).</summary>
-    int ThumbnailCacheCapacity { get; set; }
-
+    #region Indexing
+    
+    /// <summary>Index (or re-index) a folder recursively.</summary>
+    Task IndexFolderAsync(string folder, IProgress<double>? progress = null, CancellationToken ct = default);
+    
     /// <summary>Attempt to enrich a metadata object with missing structured fields.</summary>
     void RefreshMetadata(ImageMetadata meta);
+    
+    #endregion
+
+    #region Search
+    
+    /// <summary>Search by tag/prompt tokens (OR mode, partial matching).</summary>
+    IEnumerable<ImageMetadata> SearchByTag(string query);
+    
+    /// <summary>Search with configurable options for AND/OR and partial matching.</summary>
+    IEnumerable<ImageMetadata> Search(string query, bool andMode, bool partialMode);
+    
+    /// <summary>Get tag suggestions based on a prefix.</summary>
+    IEnumerable<string> SuggestTags(string prefix);
+    
+    #endregion
+
+    #region Thumbnails
+    
+    /// <summary>Ensure a thumbnail of at least the given width is available.</summary>
+    Task EnsureThumbnailAsync(ImageMetadata meta, int decodeWidth = 256, CancellationToken ct = default, bool allowDownscale = false);
+    
+    /// <summary>Preload thumbnails for a collection of metadata items.</summary>
+    Task PreloadThumbnailsAsync(IEnumerable<ImageMetadata> items, int decodeWidth = 256, CancellationToken ct = default, int maxParallelism = 0);
+    
+    /// <summary>Adjust thumbnail cache capacity (entry count).</summary>
+    int ThumbnailCacheCapacity { get; set; }
+    
+    /// <summary>Reset and clear in-memory thumbnail cache.</summary>
+    void ClearThumbnailCache();
+    
+    /// <summary>Suspend/resume applying decoded thumbnails to bound metadata objects.</summary>
+    void SetApplySuspended(bool suspended);
+    
+    /// <summary>Force draining any queued apply work.</summary>
+    void FlushApplyQueue();
+    
+    /// <summary>Apply thumbnails immediately for the provided visible set when suspended.</summary>
+    void DrainVisible(HashSet<ImageMetadata> visible);
+    
+    #endregion
+
+    #region Initialization
+    
+    /// <summary>Initialize UI dispatcher used for marshaling UI-bound thumbnail work.</summary>
+    void InitializeDispatcher(DispatcherQueue dispatcherQueue);
+    
+    #endregion
+
+    #region Events
     
     /// <summary>Event raised when the index changes (items added/removed/updated).</summary>
     event EventHandler? IndexChanged;
     
-    /// <summary>
-    /// Event raised when a thumbnail is successfully applied to an ImageMetadata.
-    /// Subscribers can use this to force UI refresh for virtualized containers.
-    /// </summary>
+    /// <summary>Event raised when a thumbnail is successfully applied to an ImageMetadata.</summary>
     event Action<ImageMetadata>? ThumbnailApplied;
+    
+    /// <summary>Event raised when thumbnail cache capacity changes.</summary>
+    event Action<int>? ThumbnailCacheCapacityChanged;
+    
+    #endregion
 }
