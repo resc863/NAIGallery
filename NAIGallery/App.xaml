@@ -11,7 +11,6 @@
             </ResourceDictionary.MergedDictionaries>
             <!-- Visibility converters: use ConverterParameter="Invert" for null->Collapsed -->
             <conv:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
-            <conv:NullToVisibilityConverter x:Key="NullToCollapsedConverter" />
             <conv:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
             <FontFamily x:Key="AppFontFamily">Segoe UI Variable, Segoe UI, Malgun Gothic, "Noto Sans CJK KR", "Noto Sans KR", Arial Unicode MS</FontFamily>
             <Style TargetType="TextBlock">

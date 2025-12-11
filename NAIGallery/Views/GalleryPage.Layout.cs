@@ -36,9 +36,12 @@ public sealed partial class GalleryPage
 
     private void EnqueueVisibleStrict()
     {
-        if (EnqueueFromRealized(highPriority: true, extraBuffer: 0)) { }
-        else if (EnqueueFromRealized(highPriority: true, extraBuffer: 48)) { }
-        else if (ViewModel.Images.Count == 0 || _scrollViewer == null) return;
+        bool realized = EnqueueFromRealized(highPriority: true, extraBuffer: 0);
+        if (!realized)
+        {
+            realized = EnqueueFromRealized(highPriority: true, extraBuffer: 48);
+        }
+
         // Safeguard: if realized children unusually low compared to expected rows, request reflow.
         try
         {
@@ -59,6 +62,11 @@ public sealed partial class GalleryPage
             }
         }
         catch { }
+
+        if (realized) return;
+
+        if (ViewModel.Images.Count == 0 || _scrollViewer == null) return;
+
         // Compute full logical visible range strictly from scroll metrics
         int cols2 = Math.Max(1, (int)((GalleryView?.ActualWidth > 0 ? GalleryView.ActualWidth : ActualWidth) / Math.Max(1, _baseItemSize)));
         double itemH2 = _baseItemSize;

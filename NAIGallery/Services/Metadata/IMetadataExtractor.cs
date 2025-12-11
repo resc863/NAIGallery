@@ -12,5 +12,5 @@ public interface IMetadataExtractor
     /// Extract structured metadata for the given image file.
     /// Returns null on failure or unsupported format.
     /// </summary>
-    ImageMetadata? Extract(string file, string rootFolder);
+    ImageMetadata? Extract(string file, string rootFolder, int? knownWidth = null, int? knownHeight = null);
 }

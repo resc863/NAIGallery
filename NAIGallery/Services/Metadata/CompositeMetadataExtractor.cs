@@ -12,13 +12,13 @@ internal sealed class CompositeMetadataExtractor : IMetadataExtractor
     private readonly IReadOnlyList<IMetadataExtractor> _extractors;
     public CompositeMetadataExtractor(IReadOnlyList<IMetadataExtractor> extractors) => _extractors = extractors;
 
-    public ImageMetadata? Extract(string file, string rootFolder)
+    public ImageMetadata? Extract(string file, string rootFolder, int? knownWidth = null, int? knownHeight = null)
     {
         foreach (var ex in _extractors)
         {
             try
             {
-                var meta = ex.Extract(file, rootFolder);
+                var meta = ex.Extract(file, rootFolder, knownWidth, knownHeight);
                 if (meta != null) return meta;
             }
             catch { }

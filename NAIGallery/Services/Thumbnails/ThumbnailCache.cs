@@ -1,170 +1,145 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NAIGallery.Services.Thumbnails;
 
 /// <summary>
-/// Represents cached pixel data for a thumbnail.
+/// 디코딩된 썸네일 픽셀 데이터
 /// </summary>
-internal sealed class PixelEntry
+internal sealed class PixelData : IDisposable
 {
-    public required byte[] Pixels;
-    public required int W;
-    public required int H;
-    public required int Rented;
+    public byte[] Pixels { get; private set; }
+    public int Width { get; }
+    public int Height { get; }
+    public int ByteCount { get; }
+    
+    private int _disposed;
+
+    public PixelData(byte[] pixels, int width, int height, int byteCount)
+    {
+        Pixels = pixels;
+        Width = width;
+        Height = height;
+        ByteCount = byteCount;
+    }
+
+    public bool IsValid => Volatile.Read(ref _disposed) == 0 && Pixels != null;
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        {
+            var px = Pixels;
+            Pixels = null!;
+            if (px != null)
+            {
+                try { ArrayPool<byte>.Shared.Return(px); } catch { }
+            }
+        }
+    }
 }
 
 /// <summary>
-/// LRU cache for decoded thumbnail pixel data.
-/// Thread-safe via internal locking.
+/// 간단한 LRU 썸네일 캐시
 /// </summary>
 internal sealed class ThumbnailCache : IDisposable
 {
-    private sealed class LruNode
+    private readonly object _lock = new();
+    private readonly Dictionary<string, LinkedListNode<CacheEntry>> _map = new(StringComparer.Ordinal);
+    private readonly LinkedList<CacheEntry> _lru = new();
+    private long _currentBytes;
+    private long _capacity;
+    private bool _disposed;
+
+    private sealed class CacheEntry
     {
         public required string Key;
-        public required PixelEntry Entry;
-        public LruNode? Prev;
-        public LruNode? Next;
+        public required PixelData Data;
     }
-
-    private readonly Dictionary<string, LruNode> _cacheMap = new(StringComparer.Ordinal);
-    private LruNode? _head;
-    private LruNode? _tail;
-    private long _currentBytes;
-    private long _byteCapacity;
-    private readonly object _cacheLock = new();
-    private bool _disposed;
 
     public ThumbnailCache(long capacityBytes)
     {
-        _byteCapacity = Math.Max(1, capacityBytes);
+        _capacity = Math.Max(1024 * 1024, capacityBytes); // 최소 1MB
     }
 
     public long Capacity
     {
-        get
-        {
-            lock (_cacheLock)
-                return _byteCapacity;
-        }
+        get { lock (_lock) return _capacity; }
         set
         {
-            lock (_cacheLock)
+            lock (_lock)
             {
-                _byteCapacity = Math.Max(1, value);
-                Prune_NoLock();
+                _capacity = Math.Max(1024 * 1024, value);
+                Evict();
             }
         }
     }
 
-    public long CurrentBytes
+    public bool TryGet(string key, out PixelData? data)
     {
-        get
+        lock (_lock)
         {
-            lock (_cacheLock)
-                return _currentBytes;
-        }
-    }
-
-    public bool TryGet(string key, out PixelEntry? entry)
-    {
-        lock (_cacheLock)
-        {
-            if (_cacheMap.TryGetValue(key, out var node))
+            if (_map.TryGetValue(key, out var node))
             {
-                MoveToHead_NoLock(node);
-                entry = node.Entry;
-                return true;
+                // LRU 업데이트: 맨 앞으로 이동
+                _lru.Remove(node);
+                _lru.AddFirst(node);
+                data = node.Value.Data;
+                return data.IsValid;
             }
         }
-        entry = null;
+        data = null;
         return false;
     }
 
-    public void Add(string key, PixelEntry entry)
+    public void Add(string key, PixelData data)
     {
-        lock (_cacheLock)
+        lock (_lock)
         {
-            if (_cacheMap.TryGetValue(key, out var existing))
+            // 이미 존재하면 제거
+            if (_map.TryGetValue(key, out var existing))
             {
-                _currentBytes -= existing.Entry.Rented;
-                try { ArrayPool<byte>.Shared.Return(existing.Entry.Pixels); } catch { }
-                existing.Entry = entry;
-                _currentBytes += entry.Rented;
-                MoveToHead_NoLock(existing);
-                Prune_NoLock();
-                return;
+                _currentBytes -= existing.Value.Data.ByteCount;
+                _lru.Remove(existing);
+                _map.Remove(key);
+                existing.Value.Data.Dispose();
             }
 
-            var node = new LruNode { Key = key, Entry = entry };
-            _cacheMap[key] = node;
-            _currentBytes += entry.Rented;
-            InsertHead_NoLock(node);
-            Prune_NoLock();
-        }
-    }
+            // 새 항목 추가
+            var entry = new CacheEntry { Key = key, Data = data };
+            var node = _lru.AddFirst(entry);
+            _map[key] = node;
+            _currentBytes += data.ByteCount;
 
-    public void Touch(string key)
-    {
-        lock (_cacheLock)
-        {
-            if (_cacheMap.TryGetValue(key, out var node))
-            {
-                MoveToHead_NoLock(node);
-            }
+            Evict();
         }
     }
 
     public void Clear()
     {
-        lock (_cacheLock)
+        lock (_lock)
         {
-            foreach (var kv in _cacheMap)
+            foreach (var node in _lru)
             {
-                try { ArrayPool<byte>.Shared.Return(kv.Value.Entry.Pixels); } catch { }
+                node.Data.Dispose();
             }
-            _cacheMap.Clear();
-            _head = _tail = null;
+            _map.Clear();
+            _lru.Clear();
             _currentBytes = 0;
         }
     }
 
-    private void InsertHead_NoLock(LruNode node)
+    private void Evict()
     {
-        node.Prev = null;
-        node.Next = _head;
-        if (_head != null) _head.Prev = node;
-        _head = node;
-        _tail ??= node;
-    }
-
-    private void MoveToHead_NoLock(LruNode node)
-    {
-        if (node == _head) return;
-        if (node.Prev != null) node.Prev.Next = node.Next;
-        if (node.Next != null) node.Next.Prev = node.Prev;
-        if (node == _tail) _tail = node.Prev;
-        node.Prev = null;
-        node.Next = _head;
-        if (_head != null) _head.Prev = node;
-        _head = node;
-        _tail ??= node;
-    }
-
-    private void Prune_NoLock()
-    {
-        while (_currentBytes > _byteCapacity && _tail != null)
+        while (_currentBytes > _capacity && _lru.Last != null)
         {
-            var evict = _tail;
-            var prev = evict.Prev;
-            if (prev != null) prev.Next = null;
-            _tail = prev;
-            if (_tail == null) _head = null;
-            _cacheMap.Remove(evict.Key);
-            _currentBytes -= evict.Entry.Rented;
-            try { ArrayPool<byte>.Shared.Return(evict.Entry.Pixels); } catch { }
+            var victim = _lru.Last;
+            _lru.RemoveLast();
+            _map.Remove(victim.Value.Key);
+            _currentBytes -= victim.Value.Data.ByteCount;
+            victim.Value.Data.Dispose();
         }
     }
 

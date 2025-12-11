@@ -85,19 +85,6 @@
                                             <ScaleTransform ScaleX="1" ScaleY="1" />
                                         </Image.RenderTransform>
                                     </Image>
-
-                                    <Border Background="#80000000"
-                                            VerticalAlignment="Bottom"
-                                            Padding="4"
-                                            CornerRadius="0,0,4,4"
-                                            IsHitTestVisible="False"
-                                            Visibility="{Binding ElementName=connectedElement, Path=Source, Converter={StaticResource NullToCollapsedConverter}, ConverterParameter=Invert}">
-                                        <TextBlock Text="{x:Bind Prompt, Mode=OneWay}"
-                                                   Foreground="White"
-                                                   FontSize="12"
-                                                   MaxLines="2"
-                                                   TextTrimming="CharacterEllipsis" />
-                                    </Border>
                                 </Grid>
                             </Border>
                         </controls:AspectPresenter>

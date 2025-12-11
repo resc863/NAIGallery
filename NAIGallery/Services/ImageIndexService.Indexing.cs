@@ -243,7 +243,14 @@ public partial class ImageIndexService
 
         if (!unchanged)
         {
-            var meta = _metadataExtractor.Extract(file, folder);
+            int? w = null, h = null;
+            if (existing != null)
+            {
+                w = existing.OriginalWidth;
+                h = existing.OriginalHeight;
+            }
+
+            var meta = _metadataExtractor.Extract(file, folder, w, h);
             if (meta != null)
             {
                 meta.SearchText = SearchTextBuilder.BuildSearchText(meta);
@@ -255,9 +262,6 @@ public partial class ImageIndexService
                 _index[file] = meta;
                 tagBatches.Add(meta.Tags);
                 _searchIndex.Index(meta);
-
-                foreach (var t in meta.Tags) 
-                    _tagTrie.Add(t);
             }
         }
 
@@ -279,7 +283,10 @@ public partial class ImageIndexService
             foreach (var batch in tagBatches)
             {
                 foreach (var t in batch)
+                {
                     _tagSet.Add(t);
+                    _tagTrie.Add(t);
+                }
             }
         }
     }
@@ -302,7 +309,7 @@ public partial class ImageIndexService
         
         try
         {
-            var parsed = _metadataExtractor.Extract(meta.FilePath, Path.GetDirectoryName(meta.FilePath) ?? string.Empty);
+            var parsed = _metadataExtractor.Extract(meta.FilePath, Path.GetDirectoryName(meta.FilePath) ?? string.Empty, meta.OriginalWidth, meta.OriginalHeight);
             if (parsed != null)
             {
                 if (meta.BasePrompt == null && parsed.BasePrompt != null) 

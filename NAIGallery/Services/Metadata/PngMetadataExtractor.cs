@@ -18,7 +18,7 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
     private readonly ILogger<PngMetadataExtractor>? _logger;
     public PngMetadataExtractor(ILogger<PngMetadataExtractor>? logger = null) => _logger = logger;
 
-    public ImageMetadata? Extract(string file, string rootFolder)
+    public ImageMetadata? Extract(string file, string rootFolder, int? knownWidth = null, int? knownHeight = null)
     {
         try { if (!File.Exists(file)) return null; } catch { return null; }
 
@@ -34,16 +34,20 @@ internal sealed class PngMetadataExtractor : IMetadataExtractor
         var fi = new FileInfo(file);
         
         // Extract original image dimensions
-        int? originalWidth = null, originalHeight = null;
-        try
+        int? originalWidth = knownWidth, originalHeight = knownHeight;
+        
+        if (originalWidth == null || originalHeight == null)
         {
-            using var fs = File.OpenRead(file);
-            using var ras = fs.AsRandomAccessStream();
-            var decoder = BitmapDecoder.CreateAsync(ras).AsTask().GetAwaiter().GetResult();
-            originalWidth = (int)decoder.PixelWidth;
-            originalHeight = (int)decoder.PixelHeight;
+            try
+            {
+                using var fs = File.OpenRead(file);
+                using var ras = fs.AsRandomAccessStream();
+                var decoder = BitmapDecoder.CreateAsync(ras).AsTask().GetAwaiter().GetResult();
+                originalWidth = (int)decoder.PixelWidth;
+                originalHeight = (int)decoder.PixelHeight;
+            }
+            catch { }
         }
-        catch { }
         
         return new ImageMetadata
         {

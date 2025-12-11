@@ -32,7 +32,6 @@ public sealed class AspectPresenter : ContentControl
         if (d is AspectPresenter presenter)
         {
             presenter.InvalidateMeasure();
-            presenter.InvalidateArrange();
         }
     }
 
@@ -48,12 +47,14 @@ public sealed class AspectPresenter : ContentControl
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var (width, height) = CalculateDimensions(finalSize);
-
+        // Arrange content within the finalSize provided by the layout system.
+        // Returning a size different from finalSize can cause layout cycles.
         if (Content is UIElement child)
-            child.Arrange(new Rect(0, 0, width, height));
+        {
+            child.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+        }
 
-        return new Size(width, height);
+        return finalSize;
     }
 
     private (double Width, double Height) CalculateDimensions(Size availableSize)
