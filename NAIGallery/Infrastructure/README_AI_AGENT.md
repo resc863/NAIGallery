@@ -16,12 +16,15 @@ Centralized constants and magic numbers:
 | Search & Tokenization | `TokenMinLen`, `TokenMaxLen`, `SuggestionLimit` |
 
 ### AppSettings.cs
-- User-configurable settings (if any).
-- Consider storing cache size preferences here.
+- User-configurable settings persisted to `%LOCALAPPDATA%\NAIGallery\settings.json`.
+- Properties: `ThumbCacheCapacity`
+- Static methods: `Load()`, instance method `Save()`
 
 ### StringPool.cs
 - String interning for memory efficiency.
 - Used by tokenization to avoid duplicate string allocations.
+- Capacity-limited (50,000 entries) to prevent unbounded growth.
+- Methods: `Intern(string)`, `Clear()`, property `Count`
 
 ### Telemetry.cs
 - Metrics and counters for decode errors, latency, etc.
@@ -35,8 +38,15 @@ Centralized constants and magic numbers:
 // Access defaults
 int capacity = AppDefaults.DefaultThumbnailCapacityBytes;
 
+// Load/save settings
+var settings = AppSettings.Load();
+settings.ThumbCacheCapacity = 10000;
+settings.Save();
+
 // Intern strings for memory efficiency
 string interned = StringPool.Intern(token);
+int poolSize = StringPool.Count;
+StringPool.Clear(); // During major cleanup
 
 // Record telemetry
 Telemetry.DecodeIoErrors.Add(1);
@@ -47,3 +57,4 @@ Telemetry.DecodeLatencyMs.Record(elapsed.TotalMilliseconds);
 - Add new app-wide constants to `AppDefaults`.
 - Use `StringPool.Intern()` for frequently repeated strings (tags, tokens).
 - Record metrics via `Telemetry` for debugging decode issues.
+- Call `StringPool.Clear()` during major cleanup operations (e.g., reindexing).

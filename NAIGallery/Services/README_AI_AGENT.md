@@ -27,13 +27,13 @@ The main service fa?ade is split into multiple files for maintainability:
 
 ### Search
 - `ITokenSearchIndex` and `TokenSearchIndex`: in-memory token to metadata map with suggest and OR query.
-- `SearchTextBuilder`: builds search text and frozen token sets for fast matching.
+- `SearchTextBuilder`: builds search text and frozen token sets for fast matching using `FrozenSet<string>`.
 
 ### Tags
 - `TagTrie`: case-insensitive prefix trie for fast suggestions.
 
 ### Thumbnails
-- `IThumbnailPipeline` and `ThumbnailPipeline` (partial class, 4 files): progressive decode, LRU cache, UI apply batching, scheduling queues.
+- `IThumbnailPipeline` and `ThumbnailPipeline` (single file): progressive decode, LRU cache, UI apply batching, scheduling queues.
 - See `Thumbnails/README_AI_AGENT.md` for details.
 
 ## Threading

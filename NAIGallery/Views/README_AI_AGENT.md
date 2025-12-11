@@ -54,4 +54,4 @@ The gallery page is split into multiple files by responsibility:
 - Avoid long-running work on the UI thread; call into services for IO/decoding.
 - When returning to gallery, resume pipeline and flush apply queue so blanks fill quickly.
 - Use `DispatcherQueue.TryEnqueue()` for UI updates from background threads.
-- Keep file sizes manageable (~200-300 lines) by using partial classes.
+- Keep file sizes manageable (~200-400 lines) by using partial classes.

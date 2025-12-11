@@ -1,7 +1,7 @@
 AI Agent Guide - NAIGallery (root)
 
 Overview
-- NAIGallery is a WinUI 3 desktop app (.NET 9, Windows App SDK) that indexes PNG images, extracts prompts/parameters, builds a token-based search index, and renders a virtualized gallery with progressive thumbnails and connected animations.
+- NAIGallery is a WinUI 3 desktop app (.NET 10, Windows App SDK) that indexes PNG images, extracts prompts/parameters, builds a token-based search index, and renders a virtualized gallery with progressive thumbnails and connected animations.
 - Core layers:
   - Models: shared data contracts bound to UI.
   - Services: image indexing, metadata extraction, search, tags, thumbnails.

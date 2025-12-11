@@ -10,33 +10,33 @@
 
 ```
 NAIGallery/
-戍式式 App.xaml.cs              # DI, service registration
-戍式式 MainWindow.xaml.cs       # Navigation host
-戍式式 Controls/                # Custom UI controls (AspectPresenter)
-戍式式 Converters/              # XAML value converters
-戍式式 Infrastructure/          # AppDefaults, AppSettings, StringPool, Telemetry
-戍式式 Models/                  # ImageMetadata, CharacterPrompt, ParamEntry
-戍式式 Services/                # Core business logic
-弛   戍式式 ImageIndexService.cs          # Main facade (partial class)
-弛   戍式式 ImageIndexService.Indexing.cs # Folder indexing logic
-弛   戍式式 ImageIndexService.Search.cs   # Search & tag suggestion
-弛   戍式式 ImageIndexService.Persistence.cs # Index load/save
-弛   戍式式 Metadata/            # PNG metadata extraction
-弛   戍式式 Search/              # Token search index
-弛   戍式式 Tags/                # TagTrie for suggestions
-弛   戌式式 Thumbnails/          # Thumbnail pipeline (partial classes)
-戍式式 ViewModels/              # GalleryViewModel (MVVM)
-戌式式 Views/                   # UI pages (partial classes)
+戍式 App.xaml.cs              # DI, service registration
+戍式 MainWindow.xaml.cs       # Navigation host
+戍式 Controls/                # Custom UI controls (AspectPresenter)
+戍式 Converters/              # XAML value converters
+戍式 Infrastructure/          # AppDefaults, AppSettings, StringPool, Telemetry
+戍式 Models/                  # ImageMetadata, CharacterPrompt, ParamEntry
+戍式 Services/                # Core business logic
+弛   戍式 ImageIndexService.cs          # Main facade (partial class)
+弛   戍式 ImageIndexService.Indexing.cs # Folder indexing logic
+弛   戍式 ImageIndexService.Search.cs   # Search & tag suggestion
+弛   戍式 ImageIndexService.Persistence.cs # Index load/save
+弛   戍式 Metadata/            # PNG metadata extraction
+弛   戍式 Search/              # Token search index
+弛   戍式 Tags/                # TagTrie for suggestions
+弛   戌式 Thumbnails/          # Thumbnail pipeline (single file)
+戍式 ViewModels/              # GalleryViewModel (MVVM)
+戌式 Views/                   # UI pages (partial classes)
 ```
 
 ## How Things Fit Together
 - `App` configures DI and services.
 - `ImageIndexService` is the fa?ade used by UI: indexing, search, thumbnail management.
-  - Split into 4 partial files for maintainability (~160-230 lines each)
+  - Split into 4 partial files for maintainability (~80-230 lines each)
 - `ThumbnailPipeline` performs decode/cache/apply with worker queues.
-  - Split into 4 partial files for maintainability (~130-280 lines each)
+  - **Single file** (~350 lines) - consolidated for simplicity
 - `GalleryPage` uses the service to request thumbnails based on viewport and handles UI effects.
-  - Split into 7 partial files by responsibility
+  - Split into 8 partial files by responsibility
 - `ImageDetailPage` shows the selected image with metadata and CA transitions.
 
 ## Partial Class Structure
@@ -44,20 +44,17 @@ NAIGallery/
 ### ImageIndexService (4 files)
 | File | Responsibility | ~Lines |
 |------|---------------|--------|
-| `ImageIndexService.cs` | Fields, events, constructor, index access, thumbnail management | 160 |
+| `ImageIndexService.cs` | Fields, events, constructor, index access, thumbnail management | 140 |
 | `ImageIndexService.Indexing.cs` | Folder indexing, dimension scan, metadata extraction | 230 |
 | `ImageIndexService.Search.cs` | Search logic, tag suggestions | 120 |
 | `ImageIndexService.Persistence.cs` | Index load/save (JSON) | 80 |
 
-### ThumbnailPipeline (4 files)
+### ThumbnailPipeline (1 file - consolidated)
 | File | Responsibility | ~Lines |
 |------|---------------|--------|
-| `ThumbnailPipeline.cs` | Fields, events, initialization, public API | 280 |
-| `ThumbnailPipeline.Decoding.cs` | Image decoding, COM error handling | 200 |
-| `ThumbnailPipeline.Apply.cs` | Apply queue, WriteableBitmap creation | 160 |
-| `ThumbnailPipeline.Workers.cs` | Worker management, memory pressure | 130 |
+| `ThumbnailPipeline.cs` | Fields, events, decoding, apply queue, workers, public API | 350 |
 
-### GalleryPage (7 files)
+### GalleryPage (8 files)
 | File | Responsibility |
 |------|---------------|
 | `GalleryPage.xaml.cs` | Main entry, event handlers |
@@ -83,7 +80,7 @@ NAIGallery/
 - Favor async/await, avoid blocking UI.
 - Use `StringComparer.Ordinal/OrdinalIgnoreCase` explicitly.
 - Guard all file/IO with try/catch and respect cancellation tokens.
-- Keep individual files under 300 lines for AI agent workability.
+- Keep individual files under 400 lines for AI agent workability.
 - Use partial classes to split large classes by responsibility.
 
 ## See Folder-Level Guides for Details
