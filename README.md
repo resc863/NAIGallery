@@ -140,7 +140,7 @@ dotnet run --project NAIGallery
 
 ## 📄 라이선스
 
-MIT License
+Apache 2.0 License
 
 ## 🤝 기여
 
