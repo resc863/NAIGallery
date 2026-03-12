@@ -60,6 +60,9 @@ public partial class ImageIndexService
             meta.FilePath = Path.GetFullPath(Path.Combine(folder, meta.RelativePath));
         else if (meta.FilePath != null && !Path.IsPathRooted(meta.FilePath))
             meta.FilePath = Path.GetFullPath(Path.Combine(folder, meta.FilePath));
+
+        if (!string.IsNullOrWhiteSpace(meta.FilePath))
+            meta.RelativePath = Path.GetRelativePath(folder, meta.FilePath);
     }
 
     private async Task SaveIndexAsync(string folder)
@@ -73,7 +76,7 @@ public partial class ImageIndexService
                 .Where(m => m.FilePath.StartsWith(folder, StringComparison.OrdinalIgnoreCase))
                 .Select(m => new ImageMetadata
                 {
-                    FilePath = m.FilePath,
+                    FilePath = Path.GetRelativePath(folder, m.FilePath),
                     RelativePath = Path.GetRelativePath(folder, m.FilePath),
                     Prompt = m.Prompt,
                     NegativePrompt = m.NegativePrompt,

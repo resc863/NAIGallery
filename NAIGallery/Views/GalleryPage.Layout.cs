@@ -147,8 +147,7 @@ public sealed partial class GalleryPage
         }
 
         int minIdx = int.MaxValue; int maxIdx = -1; int desiredWidth = GetDesiredDecodeWidth();
-        Dictionary<ImageMetadata,int>? indexMap = null;
-        try { indexMap = new Dictionary<ImageMetadata,int>(ViewModel.Images.Count); for (int i = 0; i < ViewModel.Images.Count; i++) indexMap[ViewModel.Images[i]] = i; } catch { indexMap = null; }
+        var indexMap = GetImageIndexMap();
 
         var candidates = new List<(ImageMetadata meta, int idx, double dist, int curWidth, double y)>();
         for (int c = 0; c < host.Children.Count; c++)
@@ -174,7 +173,7 @@ public sealed partial class GalleryPage
             }
             catch { continue; }
             if (y > bottom || (y + h) < top) continue;
-            int idx = (indexMap != null && indexMap.TryGetValue(meta, out var mapped)) ? mapped : ViewModel.Images.IndexOf(meta);
+            int idx = indexMap.TryGetValue(meta, out var mapped) ? mapped : ViewModel.Images.IndexOf(meta);
             if (idx < 0) continue;
             if (idx < minIdx) minIdx = idx; if (idx > maxIdx) maxIdx = idx;
             double tileCenter = y + h / 2.0;

@@ -177,19 +177,14 @@ public sealed partial class GalleryPage
     private void Item_Tapped(object sender, TappedRoutedEventArgs e)
     {
         var now = DateTime.UtcNow;
-        // Reduced scroll bubbling check delay for better click responsiveness
-        if (_isScrollBubbling) 
-        { 
-            // Check if scroll has actually stopped recently
-            if (_scrollViewer != null)
+        if (_isScrollBubbling)
+        {
+            long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            double msSinceScroll = (nowTicks - _lastScrollEventTicks) * 1000.0 / Math.Max(1, System.Diagnostics.Stopwatch.Frequency);
+            if (_scrollVelocity > FastScrollThreshold || msSinceScroll < 80)
             {
-                var lastScrollTime = (now - _lastTapAt).TotalMilliseconds;
-                // Allow tap if enough time has passed (100ms instead of waiting for bubbling flag)
-                if (lastScrollTime < 100) { e.Handled = true; return; }
-            }
-            else
-            {
-                e.Handled = true; return;
+                e.Handled = true;
+                return;
             }
         }
         if ((now - _lastTapAt).TotalMilliseconds < 100) { e.Handled = true; return; } // Reduced from 150ms to 100ms

@@ -93,7 +93,17 @@ public sealed partial class GalleryPage
             }
             
             // 컨테이너 내부 Image 요소 찾아서 Source 직접 갱신
-            var image = FindChildImage(container, meta.FilePath);
+            Image? image = null;
+            if (container is FrameworkElement containerElement)
+            {
+                image = containerElement.FindName("connectedElement") as Image;
+                if (image != null && meta.FilePath != null && image.Tag is string tag && !string.Equals(tag, meta.FilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    image = null;
+                }
+            }
+
+            image ??= FindChildImage(container, meta.FilePath);
             if (image != null && image.Source != meta.Thumbnail)
             {
                 image.Source = meta.Thumbnail;

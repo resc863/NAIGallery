@@ -18,9 +18,9 @@ public sealed partial class GalleryPage
             var desired = GetDesiredDecodeWidth();
             CancelPreloading();
             var slice = ViewModel.Images.Skip(_viewStartIndex).Take(Math.Max(1, (_viewEndIndex - _viewStartIndex + 1) + 30)).ToList();
-            try { await _service.PreloadThumbnailsAsync(slice, desired, _preloadCts!.Token); } catch { }
             EnqueueVisibleStrict();
             _ = ProcessQueueAsync();
+            StartViewportPreload(slice, desired, _preloadCts!.Token);
             _initialPrimed = true;
         }
         finally { _primeGate.Release(); }
@@ -45,9 +45,36 @@ public sealed partial class GalleryPage
         _baseItemSize = newSize; e.Handled = true;
         SuppressImplicitBriefly(280);
         CancelPreloading(); EnqueueVisibleStrict();
-        try { await _service.PreloadThumbnailsAsync(ViewModel.Images.Skip(_viewStartIndex).Take(Math.Max(1, _viewEndIndex - _viewStartIndex + 1)), GetDesiredDecodeWidth(), _preloadCts!.Token); } catch { }
+        StartViewportPreload(ViewModel.Images.Skip(_viewStartIndex).Take(Math.Max(1, _viewEndIndex - _viewStartIndex + 1)).ToList(), GetDesiredDecodeWidth(), _preloadCts!.Token);
         EnqueueVisibleStrict(); _ = ProcessQueueAsync();
         var debounceCts = new CancellationTokenSource(); var ct = debounceCts.Token;
         _ = Task.Run(async () => { try { await Task.Delay(80, ct); } catch { return; } if (!ct.IsCancellationRequested) DispatcherQueue.TryEnqueue(ApplyItemSize); });
+    }
+
+    private void StartViewportPreload(System.Collections.Generic.IReadOnlyList<Models.ImageMetadata> items, int desiredWidth, CancellationToken token)
+    {
+        if (items.Count == 0) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _service.PreloadThumbnailsAsync(items, desiredWidth, token).ConfigureAwait(false);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (token.IsCancellationRequested) return;
+
+            DispatcherQueue?.TryEnqueue(() =>
+            {
+                if (token.IsCancellationRequested) return;
+                EnqueueVisibleStrict();
+                _service.FlushApplyQueue();
+                _ = ProcessQueueAsync();
+            });
+        });
     }
 }

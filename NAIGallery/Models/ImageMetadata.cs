@@ -17,7 +17,7 @@ public class ImageMetadata : INotifyPropertyChanged
     private const double MinAspectRatio = 0.1;
     private const double MaxAspectRatio = 10.0;
 
-    /// <summary>Absolute file path to the image on disk.</summary>
+    /// <summary>Absolute file path to the image on disk at runtime. Persisted index data stores this relative to the index file folder.</summary>
     public required string FilePath { get; set; }
 
     /// <summary>Path relative to the chosen root folder (not persisted to UI).</summary>

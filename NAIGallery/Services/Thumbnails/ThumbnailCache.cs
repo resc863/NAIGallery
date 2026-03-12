@@ -10,33 +10,58 @@ namespace NAIGallery.Services.Thumbnails;
 /// </summary>
 internal sealed class PixelData : IDisposable
 {
-    public byte[] Pixels { get; private set; }
+    private byte[]? _pixels;
+    private int _refCount = 1;
+
+    public byte[] Pixels => _pixels ?? Array.Empty<byte>();
     public int Width { get; }
     public int Height { get; }
     public int ByteCount { get; }
-    
-    private int _disposed;
 
     public PixelData(byte[] pixels, int width, int height, int byteCount)
     {
-        Pixels = pixels;
+        _pixels = pixels;
         Width = width;
         Height = height;
         ByteCount = byteCount;
     }
 
-    public bool IsValid => Volatile.Read(ref _disposed) == 0 && Pixels != null;
+    public bool IsValid => Volatile.Read(ref _refCount) > 0 && _pixels != null;
+
+    public bool TryAcquire()
+    {
+        while (true)
+        {
+            int current = Volatile.Read(ref _refCount);
+            if (current == 0 || _pixels == null)
+                return false;
+
+            if (Interlocked.CompareExchange(ref _refCount, current + 1, current) == current)
+                return true;
+        }
+    }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+        while (true)
         {
-            var px = Pixels;
-            Pixels = null!;
-            if (px != null)
+            int current = Volatile.Read(ref _refCount);
+            if (current == 0)
+                return;
+
+            if (Interlocked.CompareExchange(ref _refCount, current - 1, current) != current)
+                continue;
+
+            if (current == 1)
             {
-                try { ArrayPool<byte>.Shared.Return(px); } catch { }
+                var px = Interlocked.Exchange(ref _pixels, null);
+                if (px != null)
+                {
+                    try { ArrayPool<byte>.Shared.Return(px); } catch { }
+                }
             }
+
+            return;
         }
     }
 }

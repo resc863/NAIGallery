@@ -34,12 +34,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     // 요청 큐
     private readonly ConcurrentQueue<ThumbnailRequest> _highQueue = new();
     private readonly ConcurrentQueue<ThumbnailRequest> _normalQueue = new();
+    private readonly ConcurrentDictionary<string, int> _scheduledWidths = new(StringComparer.OrdinalIgnoreCase);
     
     // UI 적용 큐
     private readonly ConcurrentQueue<ApplyRequest> _applyQueue = new();
+    private readonly ConcurrentDictionary<string, int> _pendingApplyWidths = new(StringComparer.OrdinalIgnoreCase);
     
     // 상태 추적
     private readonly ConcurrentDictionary<string, int> _processing = new(StringComparer.OrdinalIgnoreCase);
+    private int _pendingHighCount;
+    private int _pendingNormalCount;
+    private int _pendingApplyCount;
     
     // 워커 관리
     private readonly CancellationTokenSource _cts = new();
@@ -86,7 +91,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private void OnWorkerTimerTick(object? state)
     {
         // 큐에 항목이 있으면 워커 추가
-        int pending = _highQueue.Count + _normalQueue.Count;
+        int pending = Volatile.Read(ref _pendingHighCount) + Volatile.Read(ref _pendingNormalCount);
         if (pending > 0)
         {
             int needed = Math.Min(pending, _maxWorkers);
@@ -94,7 +99,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         }
         
         // 적용 큐 처리
-        if (!_applyQueue.IsEmpty && !_applySuspended)
+        if (Volatile.Read(ref _pendingApplyCount) > 0 && !_applySuspended)
         {
             ScheduleApply();
         }
@@ -126,12 +131,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             while (!token.IsCancellationRequested)
             {
                 ThumbnailRequest? request = null;
-                
-                // 높은 우선순위 먼저
-                if (!_highQueue.TryDequeue(out request))
-                {
-                    _normalQueue.TryDequeue(out request);
-                }
+                TryDequeueRequest(out request);
                 
                 if (request == null)
                 {
@@ -168,8 +168,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     {
         var meta = request.Meta;
         int width = request.Width;
+        string filePath = meta.FilePath;
+        bool decodeGateHeld = false;
         
-        if (meta?.FilePath == null || !File.Exists(meta.FilePath))
+        if (meta?.FilePath == null || !File.Exists(filePath))
+            return;
+
+        if (_scheduledWidths.TryGetValue(filePath, out var scheduledWidth) && scheduledWidth > width)
             return;
         
         // 이미 충분한 해상도가 있으면 스킵
@@ -177,15 +182,15 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             return;
         
         // 이미 처리 중이면 스킵
-        int processingWidth = _processing.GetOrAdd(meta.FilePath, 0);
+        int processingWidth = _processing.GetOrAdd(filePath, 0);
         if (processingWidth >= width)
             return;
-        _processing[meta.FilePath] = width;
+        _processing[filePath] = width;
         
         try
         {
             // 캐시 확인
-            string cacheKey = MakeCacheKey(meta.FilePath, width);
+            string cacheKey = MakeCacheKey(filePath, width);
             if (_cache.TryGet(cacheKey, out var cached) && cached != null)
             {
                 EnqueueApply(new ApplyRequest(meta, cached, width));
@@ -193,24 +198,43 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             }
             
             // 디코딩
-            await _decodeGate.WaitAsync(ct);
+            if (ct.IsCancellationRequested)
+                return;
+
             try
             {
-                var pixelData = await DecodeImageAsync(meta.FilePath, width, ct);
+                await _decodeGate.WaitAsync(ct);
+                decodeGateHeld = true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            try
+            {
+                var pixelData = await DecodeImageAsync(filePath, width, ct);
                 if (pixelData != null)
                 {
                     _cache.Add(cacheKey, pixelData);
-                    EnqueueApply(new ApplyRequest(meta, pixelData, width));
+                    if (pixelData.TryAcquire())
+                    {
+                        EnqueueApply(new ApplyRequest(meta, pixelData, width));
+                    }
                 }
             }
             finally
             {
-                _decodeGate.Release();
+                if (decodeGateHeld)
+                {
+                    _decodeGate.Release();
+                }
             }
         }
         finally
         {
-            _processing.TryRemove(meta.FilePath, out _);
+            _processing.TryRemove(filePath, out _);
+            ClearScheduledWidth(filePath, width);
         }
     }
 
@@ -328,7 +352,32 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private void EnqueueApply(ApplyRequest request)
     {
+        string filePath = request.Meta.FilePath;
+        bool shouldEnqueue = false;
+        _pendingApplyWidths.AddOrUpdate(
+            filePath,
+            _ =>
+            {
+                shouldEnqueue = true;
+                return request.Width;
+            },
+            (_, existing) =>
+            {
+                if (existing >= request.Width)
+                    return existing;
+
+                shouldEnqueue = true;
+                return request.Width;
+            });
+
+        if (!shouldEnqueue)
+        {
+            request.Data.Dispose();
+            return;
+        }
+
         _applyQueue.Enqueue(request);
+        Interlocked.Increment(ref _pendingApplyCount);
         ScheduleApply();
     }
 
@@ -347,6 +396,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             int count = 0;
             while (_applyQueue.TryDequeue(out var request) && count < 16)
             {
+                Interlocked.Decrement(ref _pendingApplyCount);
                 await ApplyThumbnailAsync(request);
                 count++;
                 
@@ -370,13 +420,20 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         var meta = request.Meta;
         var data = request.Data;
         int width = request.Width;
+        string filePath = meta.FilePath;
+        bool applyGateHeld = false;
         
-        if (!data.IsValid) return;
-        if ((meta.ThumbnailPixelWidth ?? 0) >= width) return;
-        
-        await _applyGate.WaitAsync();
         try
         {
+            if (_pendingApplyWidths.TryGetValue(filePath, out var pendingWidth) && pendingWidth > width)
+                return;
+
+            if (!data.IsValid) return;
+            if ((meta.ThumbnailPixelWidth ?? 0) >= width) return;
+
+            await _applyGate.WaitAsync();
+            applyGateHeld = true;
+
             if (!data.IsValid) return;
             
             var wb = new WriteableBitmap(data.Width, data.Height);
@@ -405,7 +462,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         }
         finally
         {
-            _applyGate.Release();
+            if (applyGateHeld)
+            {
+                try { _applyGate.Release(); } catch { }
+            }
+
+            if (_pendingApplyWidths.TryGetValue(filePath, out var pendingWidth) && pendingWidth <= width)
+            {
+                _pendingApplyWidths.TryRemove(filePath, out _);
+            }
+
+            data.Dispose();
         }
     }
 
@@ -428,12 +495,39 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     {
         if (meta?.FilePath == null) return;
         if ((meta.ThumbnailPixelWidth ?? 0) >= width) return;
+
+        bool shouldEnqueue = false;
+        _scheduledWidths.AddOrUpdate(
+            meta.FilePath,
+            _ =>
+            {
+                shouldEnqueue = true;
+                return width;
+            },
+            (_, existing) =>
+            {
+                if (existing >= width)
+                    return existing;
+
+                shouldEnqueue = true;
+                return width;
+            });
+
+        if (!shouldEnqueue) return;
+
+        meta.IsLoadingThumbnail = true;
         
         var request = new ThumbnailRequest(meta, width, highPriority);
         if (highPriority)
+        {
             _highQueue.Enqueue(request);
+            Interlocked.Increment(ref _pendingHighCount);
+        }
         else
+        {
             _normalQueue.Enqueue(request);
+            Interlocked.Increment(ref _pendingNormalCount);
+        }
         
         EnsureWorkers(1);
     }
@@ -526,13 +620,40 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     public void ResetPendingState()
     {
         // 큐 비우기
-        while (_highQueue.TryDequeue(out _)) { }
-        while (_normalQueue.TryDequeue(out _)) { }
+        while (_highQueue.TryDequeue(out _)) { Interlocked.Decrement(ref _pendingHighCount); }
+        while (_normalQueue.TryDequeue(out _)) { Interlocked.Decrement(ref _pendingNormalCount); }
         
         _processing.Clear();
+        _scheduledWidths.Clear();
         
         // 적용 큐 유지 (이미 디코딩된 것은 적용)
         ScheduleApply();
+    }
+
+    private bool TryDequeueRequest(out ThumbnailRequest? request)
+    {
+        if (_highQueue.TryDequeue(out request))
+        {
+            Interlocked.Decrement(ref _pendingHighCount);
+            return true;
+        }
+
+        if (_normalQueue.TryDequeue(out request))
+        {
+            Interlocked.Decrement(ref _pendingNormalCount);
+            return true;
+        }
+
+        request = null;
+        return false;
+    }
+
+    private void ClearScheduledWidth(string filePath, int width)
+    {
+        if (_scheduledWidths.TryGetValue(filePath, out var scheduledWidth) && scheduledWidth <= width)
+        {
+            _scheduledWidths.TryRemove(filePath, out _);
+        }
     }
 
     #endregion

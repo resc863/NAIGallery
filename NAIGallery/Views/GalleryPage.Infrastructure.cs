@@ -86,6 +86,8 @@ public sealed partial class GalleryPage
                     if (!isFastScrolling)
                     {
                         EnqueueVisibleStrict();
+                        TryDrainVisibleDuringScroll();
+                        _service.FlushApplyQueue();
                     }
                     UpdateSchedulerViewportInternal();
                 }

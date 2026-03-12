@@ -18,6 +18,7 @@ using Windows.Foundation;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI; // Added for Win32Interop
+using System.Collections.Generic;
 
 namespace NAIGallery.Views;
 
@@ -90,6 +91,7 @@ public sealed partial class GalleryPage : Page
     private ScrollViewer? _scrollViewer;
     private Panel? _itemsHost;
     private CancellationTokenSource? _reflowCts;
+    private Dictionary<ImageMetadata, int>? _imageIndexMap;
 
     private DateTime _lastTapAt = DateTime.MinValue;
 
@@ -131,6 +133,27 @@ public sealed partial class GalleryPage : Page
         Unloaded += GalleryPage_Unloaded;
         SizeChanged += Gallery_SizeChanged;
         AddHandler(UIElement.PointerWheelChangedEvent, new PointerEventHandler(Root_PointerWheelChanged), true);
+    }
+
+    private IReadOnlyDictionary<ImageMetadata, int> GetImageIndexMap()
+    {
+        var map = _imageIndexMap;
+        if (map != null && map.Count == ViewModel.Images.Count)
+            return map;
+
+        return RebuildImageIndexMap();
+    }
+
+    private Dictionary<ImageMetadata, int> RebuildImageIndexMap()
+    {
+        var map = new Dictionary<ImageMetadata, int>(ViewModel.Images.Count);
+        for (int i = 0; i < ViewModel.Images.Count; i++)
+        {
+            map[ViewModel.Images[i]] = i;
+        }
+
+        _imageIndexMap = map;
+        return map;
     }
 
     private void Gallery_SizeChanged(object sender, SizeChangedEventArgs e)
