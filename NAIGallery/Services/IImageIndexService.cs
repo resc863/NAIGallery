@@ -56,6 +56,18 @@ public interface IImageIndexService
     
     /// <summary>Preload thumbnails for a collection of metadata items.</summary>
     Task PreloadThumbnailsAsync(IEnumerable<ImageMetadata> items, int decodeWidth = 256, CancellationToken ct = default, int maxParallelism = 0);
+
+    /// <summary>Queue a thumbnail request for the given image.</summary>
+    void ScheduleThumbnail(ImageMetadata meta, int width, bool highPriority = false);
+
+    /// <summary>Boost currently visible items ahead of buffered work.</summary>
+    void BoostVisible(IReadOnlyList<ImageMetadata> metas, int width);
+
+    /// <summary>Update viewport-aware scheduling priorities.</summary>
+    void UpdateViewport(IReadOnlyList<ImageMetadata> orderedVisible, IReadOnlyList<ImageMetadata> bufferItems, int width);
+
+    /// <summary>Reset pending thumbnail scheduling state.</summary>
+    void ResetPendingState();
     
     /// <summary>Adjust thumbnail cache capacity (entry count).</summary>
     int ThumbnailCacheCapacity { get; set; }

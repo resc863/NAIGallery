@@ -25,11 +25,6 @@ public partial class ImageIndexService
             
             foreach (var meta in list)
             {
-                NormalizeFilePath(meta, folder);
-                meta.Tags ??= new();
-                meta.SearchText = SearchTextBuilder.BuildSearchText(meta);
-                meta.TokenSet = SearchTextBuilder.BuildFrozenTokenSet(meta);
-                
                 if (meta.LastWriteTimeTicks == null)
                 {
                     try { meta.LastWriteTimeTicks = new FileInfo(meta.FilePath).LastWriteTimeUtc.Ticks; } catch { }
@@ -40,10 +35,7 @@ public partial class ImageIndexService
                 
                 if (!string.IsNullOrWhiteSpace(meta.FilePath))
                 {
-                    _index[meta.FilePath] = meta;
-                    foreach (var t in meta.Tags) _tagSet.Add(t);
-                    _searchIndex.Index(meta);
-                    foreach (var t in meta.Tags) _tagTrie.Add(t);
+                    UpsertMetadata(meta, folder, notify: false);
                     loaded++;
                 }
             }
@@ -51,7 +43,10 @@ public partial class ImageIndexService
             InvalidateSorted();
             _logger?.LogInformation("Loaded {Loaded} images from index, {WithDimensions} have original dimensions", loaded, withDimensions);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to load image index from {Path}", path);
+        }
     }
 
     private static void NormalizeFilePath(ImageMetadata meta, string folder)
@@ -98,6 +93,7 @@ public partial class ImageIndexService
         catch
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            _logger?.LogWarning("Failed to save image index to {Path}", path);
         }
     }
     

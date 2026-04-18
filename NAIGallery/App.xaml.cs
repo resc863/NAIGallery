@@ -26,6 +26,8 @@ public partial class App : Application
     /// <summary>Service provider hosting application singletons.</summary>
     public IServiceProvider Services { get; }
 
+    public T GetRequiredService<T>() where T : notnull => Services.GetRequiredService<T>();
+
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(PngMetadataExtractor))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CompositeMetadataExtractor))]
     public App()
@@ -51,14 +53,20 @@ public partial class App : Application
             builder.AddDebug();
         });
 
-        // Metadata extractors (composite allows future format additions)
-        services.AddSingleton<IMetadataExtractor>(sp => new CompositeMetadataExtractor(new IMetadataExtractor[]
-        {
-            new PngMetadataExtractor()
-            // Future: new JpegMetadataExtractor(), new WebpMetadataExtractor(), etc.
-        }));
+        services.AddSingleton<PngMetadataExtractor>();
+        services.AddSingleton<ITokenSearchIndex, TokenSearchIndex>();
+        services.AddSingleton<IThumbnailPipeline>(sp => new ThumbnailPipeline(
+            AppDefaults.DefaultThumbnailCapacityBytes,
+            sp.GetService<ILogger<ThumbnailPipeline>>()));
 
-        services.AddSingleton<IImageIndexService, ImageIndexService>();
+        // Metadata extractors (composite allows future format additions)
+        services.AddSingleton<IMetadataExtractor>(sp => new CompositeMetadataExtractor([
+            sp.GetRequiredService<PngMetadataExtractor>()
+        ]));
+
+        services.AddSingleton<ImageIndexService>();
+        services.AddSingleton<IImageIndexService>(sp => sp.GetRequiredService<ImageIndexService>());
+        services.AddSingleton<ViewModels.GalleryViewModel>();
         
         return services.BuildServiceProvider();
     }
@@ -134,6 +142,7 @@ public partial class App : Application
             try
             {
                 var dq = DispatcherQueue.GetForCurrentThread();
+                Models.ImageMetadata.InitializeDispatcher(dq);
                 svc.InitializeDispatcher(dq);
             }
             catch { }

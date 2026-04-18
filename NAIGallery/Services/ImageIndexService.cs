@@ -12,19 +12,20 @@ using NAIGallery.Services.Metadata;
 
 namespace NAIGallery.Services;
 
-public partial class ImageIndexService : IImageIndexService
+public partial class ImageIndexService : IImageIndexService, IDisposable
 {
     #region Fields
     
     private readonly ConcurrentDictionary<string, ImageMetadata> _index = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _tagSet = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _tagCounts = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _tagLock = new();
     private const string IndexFileName = "nai_index.json";
 
     private DispatcherQueue? _dispatcherQueue;
     private readonly ILogger<ImageIndexService>? _logger;
 
-    private readonly ITokenSearchIndex _searchIndex = new TokenSearchIndex();
+    private readonly ITokenSearchIndex _searchIndex;
     private readonly IThumbnailPipeline _thumbPipeline;
     private readonly IMetadataExtractor _metadataExtractor;
     private readonly TagTrie _tagTrie = new();
@@ -33,6 +34,7 @@ public partial class ImageIndexService : IImageIndexService
     
     private volatile List<ImageMetadata>? _sortedCache;
     private readonly object _sortedLock = new();
+    private bool _disposed;
     
     #endregion
 
@@ -46,13 +48,18 @@ public partial class ImageIndexService : IImageIndexService
 
     #region Constructor
     
-    public ImageIndexService(ILogger<ImageIndexService>? logger = null, IMetadataExtractor? extractor = null)
+    public ImageIndexService(ITokenSearchIndex searchIndex, IThumbnailPipeline thumbPipeline, IMetadataExtractor extractor, ILogger<ImageIndexService>? logger = null)
     {
+        ArgumentNullException.ThrowIfNull(searchIndex);
+        ArgumentNullException.ThrowIfNull(thumbPipeline);
+        ArgumentNullException.ThrowIfNull(extractor);
+
+        _searchIndex = searchIndex;
+        _thumbPipeline = thumbPipeline;
+        _metadataExtractor = extractor;
         _logger = logger;
-        _thumbPipeline = new ThumbnailPipeline(_thumbCapacity, logger);
-        _metadataExtractor = extractor ?? new PngMetadataExtractor();
         
-        _thumbPipeline.ThumbnailApplied += meta => ThumbnailApplied?.Invoke(meta);
+        _thumbPipeline.ThumbnailApplied += HandleThumbnailApplied;
     }
     
     #endregion
@@ -144,10 +151,10 @@ public partial class ImageIndexService : IImageIndexService
     public Task PreloadThumbnailsAsync(IEnumerable<ImageMetadata> items, int decodeWidth = 256, CancellationToken ct = default, int maxParallelism = 0)
         => _thumbPipeline.PreloadAsync(items, decodeWidth, ct, maxParallelism <= 0 ? 0 : maxParallelism);
 
-    public void Schedule(ImageMetadata meta, int width, bool highPriority = false) 
+    public void ScheduleThumbnail(ImageMetadata meta, int width, bool highPriority = false) 
         => _thumbPipeline.Schedule(meta, width, highPriority);
     
-    public void BoostVisible(IEnumerable<ImageMetadata> metas, int width) 
+    public void BoostVisible(IReadOnlyList<ImageMetadata> metas, int width) 
         => _thumbPipeline.BoostVisible(metas, width);
     
     public void UpdateViewport(IReadOnlyList<ImageMetadata> orderedVisible, IReadOnlyList<ImageMetadata> bufferItems, int width) 
@@ -159,10 +166,112 @@ public partial class ImageIndexService : IImageIndexService
 
     #region Private Helpers
     
-    private void InvalidateSorted()
+    private void InvalidateSorted(bool notify = true)
     {
         _sortedCache = null;
-        IndexChanged?.Invoke(this, EventArgs.Empty);
+        if (notify)
+            IndexChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void PrepareMetadata(ImageMetadata meta, string folder)
+    {
+        NormalizeFilePath(meta, folder);
+        meta.Tags ??= [];
+        meta.SearchText = SearchTextBuilder.BuildSearchText(meta);
+        meta.TokenSet = SearchTextBuilder.BuildFrozenTokenSet(meta);
+    }
+
+    private void UpsertMetadata(ImageMetadata meta, string folder, bool notify = false)
+    {
+        PrepareMetadata(meta, folder);
+
+        if (string.IsNullOrWhiteSpace(meta.FilePath))
+            return;
+
+        if (_index.TryGetValue(meta.FilePath, out var oldMeta))
+        {
+            _searchIndex.Remove(oldMeta);
+            RemoveTags(oldMeta.Tags);
+        }
+
+        _index[meta.FilePath] = meta;
+        _searchIndex.Index(meta);
+        AddTags(meta.Tags);
+
+        InvalidateSorted(notify);
+    }
+
+    private void AddTags(IEnumerable<string>? tags)
+    {
+        if (tags == null)
+            return;
+
+        lock (_tagLock)
+        {
+            foreach (var tag in tags)
+            {
+                if (string.IsNullOrWhiteSpace(tag))
+                    continue;
+
+                if (_tagCounts.TryGetValue(tag, out var count))
+                {
+                    _tagCounts[tag] = count + 1;
+                    continue;
+                }
+
+                _tagCounts[tag] = 1;
+                _tagSet.Add(tag);
+                _tagTrie.Add(tag);
+            }
+        }
+    }
+
+    private void RemoveTags(IEnumerable<string>? tags)
+    {
+        if (tags == null)
+            return;
+
+        lock (_tagLock)
+        {
+            bool requiresRebuild = false;
+
+            foreach (var tag in tags)
+            {
+                if (string.IsNullOrWhiteSpace(tag) || !_tagCounts.TryGetValue(tag, out var count))
+                    continue;
+
+                if (count > 1)
+                {
+                    _tagCounts[tag] = count - 1;
+                    continue;
+                }
+
+                _tagCounts.Remove(tag);
+                _tagSet.Remove(tag);
+                requiresRebuild = true;
+            }
+
+            if (requiresRebuild)
+            {
+                _tagTrie.Clear();
+                foreach (var tag in _tagSet)
+                    _tagTrie.Add(tag);
+            }
+        }
+    }
+
+    private void HandleThumbnailApplied(ImageMetadata meta) => ThumbnailApplied?.Invoke(meta);
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _thumbPipeline.ThumbnailApplied -= HandleThumbnailApplied;
+
+        if (_thumbPipeline is IDisposable disposablePipeline)
+            disposablePipeline.Dispose();
     }
     
     #endregion

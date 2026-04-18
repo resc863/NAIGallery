@@ -14,6 +14,16 @@ public sealed class AppSettings
     /// </summary>
     public int? ThumbCacheCapacity { get; set; }
 
+    /// <summary>
+    /// Whether multi-token search uses AND mode.
+    /// </summary>
+    public bool SearchAndMode { get; set; }
+
+    /// <summary>
+    /// Whether search uses partial token matching.
+    /// </summary>
+    public bool SearchPartialMode { get; set; } = true;
+
     private static string GetSettingsPath()
     {
         try

@@ -8,7 +8,6 @@ using System.Collections.Generic;
 using System.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using CommunityToolkit.WinUI.Collections;
 using Microsoft.UI.Dispatching;
 
 namespace NAIGallery.ViewModels;
@@ -19,9 +18,10 @@ public enum GallerySortDirection { Asc, Desc }
 /// <summary>
 /// ViewModel for the gallery page using CommunityToolkit.Mvvm to reduce boilerplate.
 /// </summary>
-public partial class GalleryViewModel : ObservableObject
+public partial class GalleryViewModel : ObservableObject, IDisposable
 {
     private readonly IImageIndexService _indexService;
+    private readonly IAsyncRelayCommand<string> _indexFolderCommand;
     private DispatcherQueue? _dispatcherQueue;
 
     [ObservableProperty]
@@ -62,7 +62,6 @@ public partial class GalleryViewModel : ObservableObject
     private List<ImageMetadata> _lastSearch = [];
 
     public ObservableCollection<ImageMetadata> Images { get; } = [];
-    public AdvancedCollectionView ImagesView { get; }
     public ObservableCollection<string> TagSuggestions { get; } = [];
 
     public event EventHandler? ImagesChanged;
@@ -72,9 +71,8 @@ public partial class GalleryViewModel : ObservableObject
     public GalleryViewModel(IImageIndexService service)
     {
         _indexService = service;
-        
-        ImagesView = new AdvancedCollectionView(Images, false);
-        ApplySortToView();
+        _indexFolderCommand = new AsyncRelayCommand<string>(IndexFolderAsync);
+        LoadSettings();
         
         _indexService.IndexChanged += OnIndexChanged;
     }
@@ -121,7 +119,7 @@ public partial class GalleryViewModel : ObservableObject
         _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => action());
     }
 
-    public IAsyncRelayCommand<string> IndexFolderCommand => new AsyncRelayCommand<string>(IndexFolderAsync);
+    public IAsyncRelayCommand<string> IndexFolderCommand => _indexFolderCommand;
 
     partial void OnSearchQueryChanged(string value)
     {
@@ -131,37 +129,12 @@ public partial class GalleryViewModel : ObservableObject
 
     partial void OnSortFieldChanged(GallerySortField value)
     {
-        ApplySortToView();
         ApplySortOnly();
     }
 
     partial void OnSortDirectionChanged(GallerySortDirection value)
     {
-        ApplySortToView();
         ApplySortOnly();
-    }
-
-    private void ApplySortToView()
-    {
-        if (ImagesView is null) return;
-        
-        try
-        {
-            ImagesView.SortDescriptions.Clear();
-            var direction = _sortDirection == GallerySortDirection.Asc 
-                ? CommunityToolkit.WinUI.Collections.SortDirection.Ascending 
-                : CommunityToolkit.WinUI.Collections.SortDirection.Descending;
-            
-            var propertyName = _sortField switch
-            {
-                GallerySortField.Date => nameof(ImageMetadata.LastWriteTimeTicks),
-                _ => nameof(ImageMetadata.FilePath)
-            };
-            
-            ImagesView.SortDescriptions.Add(new SortDescription(propertyName, direction));
-            ImagesView.RefreshSorting();
-        }
-        catch { /* UI collection manipulation exception - safe to ignore */ }
     }
 
     public async Task IndexFolderAsync(string? folder)
@@ -207,10 +180,7 @@ public partial class GalleryViewModel : ObservableObject
                 BeforeCollectionRefresh?.Invoke(this, EventArgs.Empty);
                 
                 var sorted = Sort(_lastSearch).ToList();
-                Images.Clear();
-                foreach (var m in sorted) 
-                    Images.Add(m);
-                ImagesView.RefreshSorting();
+                ReplaceImages(sorted);
                 
                 AfterCollectionRefresh?.Invoke(this, EventArgs.Empty);
                 ImagesChanged?.Invoke(this, EventArgs.Empty);
@@ -222,11 +192,10 @@ public partial class GalleryViewModel : ObservableObject
     private async Task ApplySearchAsync(bool throttle = false)
     {
         // 기존 CTS 취소 및 새 CTS 생성
-        var oldCts = _searchCts;
-        oldCts?.Cancel();
-        
         var cts = new CancellationTokenSource();
-        _searchCts = cts;
+        var oldCts = Interlocked.Exchange(ref _searchCts, cts);
+        oldCts?.Cancel();
+        oldCts?.Dispose();
         
         try
         {
@@ -253,12 +222,7 @@ public partial class GalleryViewModel : ObservableObject
         {
             BeforeCollectionRefresh?.Invoke(this, EventArgs.Empty);
             
-            // 컬렉션 일괄 업데이트
-            Images.Clear();
-            foreach (var m in sorted) 
-                Images.Add(m);
-            
-            ImagesView.RefreshSorting();
+            ReplaceImages(sorted);
             
             AfterCollectionRefresh?.Invoke(this, EventArgs.Empty);
             ImagesChanged?.Invoke(this, EventArgs.Empty);
@@ -280,5 +244,37 @@ public partial class GalleryViewModel : ObservableObject
                 TagSuggestions.Add(s);
         }
         catch { /* Suggestion update exception */ }
+    }
+
+    private void ReplaceImages(IEnumerable<ImageMetadata> items)
+    {
+        Images.Clear();
+        foreach (var item in items)
+            Images.Add(item);
+    }
+
+    private void LoadSettings()
+    {
+        try
+        {
+            var settings = AppSettings.Load();
+            _searchAndMode = settings.SearchAndMode;
+            _searchPartialMode = settings.SearchPartialMode;
+        }
+        catch { }
+    }
+
+    partial void OnIsIndexingChanged(bool value)
+    {
+        if (!value)
+            UpdateSuggestions();
+    }
+
+    public void Dispose()
+    {
+        _indexService.IndexChanged -= OnIndexChanged;
+        var cts = Interlocked.Exchange(ref _searchCts, null);
+        cts?.Cancel();
+        cts?.Dispose();
     }
 }

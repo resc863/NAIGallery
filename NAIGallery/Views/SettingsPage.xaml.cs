@@ -4,8 +4,8 @@ using NAIGallery.Services;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 using System;
-using Windows.Storage;
 using NAIGallery.ViewModels;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 
@@ -14,40 +14,32 @@ namespace NAIGallery.Views;
 /// </summary>
 public sealed partial class SettingsPage : Page
 {
-    private readonly ImageIndexService _service;
-    private GalleryViewModel? _vm; // global vm reference
+    private readonly IImageIndexService _service;
+    private readonly GalleryViewModel _vm;
 
     public SettingsPage()
     {
         InitializeComponent();
-        _service = ((App)Application.Current).Services.GetService(typeof(ImageIndexService)) as ImageIndexService ?? new ImageIndexService();
-        if (Application.Current.Resources.TryGetValue("GlobalGalleryVM", out var existing) && existing is GalleryViewModel gvm)
-            _vm = gvm;
+        var app = (App)Application.Current;
+        _service = app.GetRequiredService<IImageIndexService>();
+        _vm = app.GetRequiredService<GalleryViewModel>();
 
         // Initialize UI from persisted settings if present
         try
         {
-            var local = ApplicationData.Current.LocalSettings;
+            var settings = AppSettings.Load();
             int cap = _service.ThumbnailCacheCapacity;
-            if (local.Values.TryGetValue("ThumbCacheCapacity", out object? val) && val != null)
-            {
-                if (val is int i) cap = i;
-                else if (val is string s && int.TryParse(s, out var j)) cap = j;
-            }
+            if (settings.ThumbCacheCapacity.HasValue)
+                cap = settings.ThumbCacheCapacity.Value;
+
             _service.ThumbnailCacheCapacity = cap;
             ThumbCacheTextBox.Text = cap.ToString();
             CacheStatusText.Text = $"메모리 캐시 항목 수: {cap}"; // display only
 
-            // If VM exists, reflect current flags into UI
-            if (_vm != null)
-            {
-                if (local.Values.TryGetValue("SearchAndMode", out var andVal) && andVal is bool ab) _vm.SearchAndMode = ab;
-                if (local.Values.TryGetValue("SearchPartialMode", out var partVal) && partVal is bool pb) _vm.SearchPartialMode = pb;
-                var chkAnd = FindName("ChkAndMode") as CheckBox;
-                var chkPartial = FindName("ChkPartial") as CheckBox;
-                if (chkAnd != null) chkAnd.IsChecked = _vm.SearchAndMode;
-                if (chkPartial != null) chkPartial.IsChecked = _vm.SearchPartialMode;
-            }
+            var chkAnd = FindName("ChkAndMode") as CheckBox;
+            var chkPartial = FindName("ChkPartial") as CheckBox;
+            if (chkAnd != null) chkAnd.IsChecked = _vm.SearchAndMode;
+            if (chkPartial != null) chkPartial.IsChecked = _vm.SearchPartialMode;
         }
         catch
         {
@@ -85,7 +77,7 @@ public sealed partial class SettingsPage : Page
         {
             // Clamp via service property (has floor 100 in setter)
             _service.ThumbnailCacheCapacity = val;
-            ApplicationData.Current.LocalSettings.Values["ThumbCacheCapacity"] = _service.ThumbnailCacheCapacity;
+            SaveSettings(settings => settings.ThumbCacheCapacity = _service.ThumbnailCacheCapacity);
             CacheStatusText.Text = $"캐시 용량 적용됨: {_service.ThumbnailCacheCapacity}";
         }
         else
@@ -102,13 +94,25 @@ public sealed partial class SettingsPage : Page
 
     private void SearchMode_CheckChanged(object sender, RoutedEventArgs e)
     {
-        if (_vm == null) return;
         var chkAnd = FindName("ChkAndMode") as CheckBox;
         var chkPartial = FindName("ChkPartial") as CheckBox;
         _vm.SearchAndMode = chkAnd?.IsChecked == true;
         _vm.SearchPartialMode = chkPartial?.IsChecked == true;
-        var local = ApplicationData.Current.LocalSettings;
-        local.Values["SearchAndMode"] = _vm.SearchAndMode;
-        local.Values["SearchPartialMode"] = _vm.SearchPartialMode;
+        SaveSettings(settings =>
+        {
+            settings.SearchAndMode = _vm.SearchAndMode;
+            settings.SearchPartialMode = _vm.SearchPartialMode;
+        });
+    }
+
+    private static void SaveSettings(Action<AppSettings> update)
+    {
+        try
+        {
+            var settings = AppSettings.Load();
+            update(settings);
+            settings.Save();
+        }
+        catch { }
     }
 }

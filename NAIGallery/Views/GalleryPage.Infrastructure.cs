@@ -330,12 +330,12 @@ public sealed partial class GalleryPage
                 {
                     if (snap.MissingRealized.Count > 0)
                     {
-                        (_service as ImageIndexService)?.BoostVisible(snap.MissingRealized, desiredWidth);
+                        _service.BoostVisible(snap.MissingRealized, desiredWidth);
                         work = true;
                     }
                     if (snap.MissingVisible.Count > 0)
                     {
-                        (_service as ImageIndexService)?.BoostVisible(snap.MissingVisible, desiredWidth);
+                        _service.BoostVisible(snap.MissingVisible, desiredWidth);
                         work = true;
                     }
                     if (snap.BufferCandidates.Count > 0)
@@ -343,7 +343,7 @@ public sealed partial class GalleryPage
                         // 배치 크기 축소
                         int batchSize = Math.Min(snap.BufferCandidates.Count, 32);
                         for (int i = 0; i < batchSize; i++)
-                            (_service as ImageIndexService)?.Schedule(snap.BufferCandidates[i], desiredWidth, false);
+                            _service.ScheduleThumbnail(snap.BufferCandidates[i], desiredWidth, false);
                         work = true;
                     }
                     // Progressive backfill
@@ -356,7 +356,7 @@ public sealed partial class GalleryPage
                             for (int i = 0; i < batch; i++)
                             {
                                 var m = snap.RemainingOrdered[cursor + i];
-                                (_service as ImageIndexService)?.Schedule(m, desiredWidth, false);
+                                _service.ScheduleThumbnail(m, desiredWidth, false);
                             }
                             _idleBackfillCursor = cursor + batch;
                             work = true;

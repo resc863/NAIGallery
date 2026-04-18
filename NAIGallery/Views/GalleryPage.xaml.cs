@@ -19,6 +19,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI; // Added for Win32Interop
 using System.Collections.Generic;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 
@@ -103,14 +104,9 @@ public sealed partial class GalleryPage : Page
         InitializeComponent();
         NavigationCacheMode = NavigationCacheMode.Enabled;
 
-        _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService ?? new ImageIndexService();
-        if (Application.Current.Resources.TryGetValue("GlobalGalleryVM", out var existing) && existing is GalleryViewModel vm)
-            ViewModel = vm;
-        else
-        {
-            ViewModel = new GalleryViewModel(_service);
-            Application.Current.Resources["GlobalGalleryVM"] = ViewModel;
-        }
+        var app = (App)Application.Current;
+        _service = app.GetRequiredService<IImageIndexService>();
+        ViewModel = app.GetRequiredService<GalleryViewModel>();
         
         // DispatcherQueue 설정 - UI 스레드에서 호출되므로 항상 유효
         var dispatcherQueue = DispatcherQueue.GetForCurrentThread();
@@ -271,7 +267,7 @@ public sealed partial class GalleryPage : Page
             _service.SetApplySuspended(true);
             
             // 2. 스케줄링 상태 초기화 (이전에 실패하거나 대기 중이던 아이템들 다시 시도 가능)
-            (_service as ImageIndexService)?.ResetPendingState();
+            _service.ResetPendingState();
             
             // 3. 모든 현재 메타데이터의 썸네일 상태 초기화 (강제 재로드를 위해)
             if (ViewModel?.Images != null)
@@ -326,7 +322,7 @@ public sealed partial class GalleryPage : Page
                         // 강제 우선순위 부스트
                         if (visibleItems.Count > 0)
                         {
-                            (_service as ImageIndexService)?.BoostVisible(visibleItems, desiredWidth);
+                            _service.BoostVisible(visibleItems, desiredWidth);
                         }
                         
                         // 8. 즉시 프리로드 시작
@@ -345,7 +341,7 @@ public sealed partial class GalleryPage : Page
                         }
                         
                         // Viewport 업데이트 (가시 + 버퍼)
-                        (_service as ImageIndexService)?.UpdateViewport(visibleItems, bufferItems, desiredWidth);
+                        _service.UpdateViewport(visibleItems, bufferItems, desiredWidth);
                         
                         // 10. IdleFill 재시작
                         StartIdleFill();

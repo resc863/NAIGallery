@@ -25,6 +25,16 @@ internal sealed class TagTrie
 
     public int Count => Volatile.Read(ref _count);
 
+    public void Clear()
+    {
+        lock (_lock)
+        {
+            _root.Children.Clear();
+            _root.Terminal.Clear();
+            Volatile.Write(ref _count, 0);
+        }
+    }
+
     public void Add(string tag)
     {
         if (string.IsNullOrWhiteSpace(tag)) return;

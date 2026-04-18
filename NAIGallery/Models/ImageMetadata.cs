@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 
 namespace NAIGallery.Models;
@@ -16,6 +17,10 @@ public class ImageMetadata : INotifyPropertyChanged
     private const double DefaultAspectRatio = 1.0;
     private const double MinAspectRatio = 0.1;
     private const double MaxAspectRatio = 10.0;
+    private static DispatcherQueue? s_dispatcherQueue;
+
+    public static void InitializeDispatcher(DispatcherQueue dispatcherQueue)
+        => s_dispatcherQueue = dispatcherQueue;
 
     /// <summary>Absolute file path to the image on disk at runtime. Persisted index data stores this relative to the index file folder.</summary>
     public required string FilePath { get; set; }
@@ -57,11 +62,31 @@ public class ImageMetadata : INotifyPropertyChanged
     /// <summary>UTC last write time ticks used for date sorting.</summary>
     public long? LastWriteTimeTicks { get; set; }
 
+    private int? _originalWidth;
+
     /// <summary>Original image width in pixels (persisted for aspect ratio calculation).</summary>
-    public int? OriginalWidth { get; set; }
+    public int? OriginalWidth
+    {
+        get => _originalWidth;
+        set
+        {
+            if (SetProperty(ref _originalWidth, value))
+                OnPropertyChanged(nameof(AspectRatio));
+        }
+    }
+
+    private int? _originalHeight;
 
     /// <summary>Original image height in pixels (persisted for aspect ratio calculation).</summary>
-    public int? OriginalHeight { get; set; }
+    public int? OriginalHeight
+    {
+        get => _originalHeight;
+        set
+        {
+            if (SetProperty(ref _originalHeight, value))
+                OnPropertyChanged(nameof(AspectRatio));
+        }
+    }
 
     private ImageSource? _thumbnail;
 
@@ -136,7 +161,20 @@ public class ImageMetadata : INotifyPropertyChanged
 
     /// <summary>Raises <see cref="PropertyChanged"/>.</summary>
     private void OnPropertyChanged([CallerMemberName] string? name = null)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    {
+        var handlers = PropertyChanged;
+        if (handlers == null)
+            return;
+
+        var dispatcherQueue = s_dispatcherQueue;
+        if (dispatcherQueue != null && !dispatcherQueue.HasThreadAccess)
+        {
+            _ = dispatcherQueue.TryEnqueue(() => handlers?.Invoke(this, new PropertyChangedEventArgs(name)));
+            return;
+        }
+
+        handlers.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 
     private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {

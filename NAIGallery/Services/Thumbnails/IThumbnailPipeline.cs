@@ -10,7 +10,7 @@ namespace NAIGallery.Services;
 /// <summary>
 /// 썸네일 디코딩, 캐싱, UI 적용을 담당하는 파이프라인 인터페이스
 /// </summary>
-internal interface IThumbnailPipeline
+public interface IThumbnailPipeline
 {
     /// <summary>
     /// UI 스레드 디스패처를 초기화합니다.

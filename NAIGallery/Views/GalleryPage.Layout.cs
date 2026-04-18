@@ -113,7 +113,7 @@ public sealed partial class GalleryPage
                 var m = ViewModel.Images[i];
                 if ((m.ThumbnailPixelWidth ?? 0) < desiredWidth) slice.Add(m);
             }
-            if (slice.Count > 0) (_service as ImageIndexService)?.BoostVisible(slice, desiredWidth);
+            if (slice.Count > 0) _service.BoostVisible(slice, desiredWidth);
         }
         catch { }
     }

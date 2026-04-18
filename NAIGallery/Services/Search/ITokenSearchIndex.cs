@@ -6,7 +6,7 @@ namespace NAIGallery.Services;
 /// <summary>
 /// Token(태그/프롬프트 토큰) 역인덱스 관리 인터페이스.
 /// </summary>
-internal interface ITokenSearchIndex
+public interface ITokenSearchIndex
 {
     /// <summary>메타데이터 객체 토큰화 및 인덱스 반영.</summary>
     void Index(ImageMetadata meta);

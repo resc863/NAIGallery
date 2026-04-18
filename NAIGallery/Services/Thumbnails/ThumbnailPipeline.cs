@@ -54,6 +54,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     // UI 상태
     private volatile bool _applySuspended;
     private int _applyScheduled;
+    private bool _disposed;
     
     // 타이머
     private Timer? _workerTimer;
@@ -80,9 +81,12 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     public void InitializeDispatcher(DispatcherQueue dispatcherQueue)
     {
         _dispatcher = dispatcherQueue;
-        
-        // 워커 관리 타이머 시작
-        _workerTimer = new Timer(OnWorkerTimerTick, null, 100, 100);
+
+        if (_workerTimer == null)
+        {
+            // 워커 관리 타이머 시작
+            _workerTimer = new Timer(OnWorkerTimerTick, null, 100, 100);
+        }
         
         // 초기 워커 시작
         EnsureWorkers(2);
@@ -107,6 +111,9 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     private void EnsureWorkers(int count)
     {
+        if (_disposed)
+            return;
+
         while (_workerCount < count && _workerCount < _maxWorkers)
         {
             if (Interlocked.Increment(ref _workerCount) <= _maxWorkers)
@@ -170,9 +177,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         int width = request.Width;
         string filePath = meta.FilePath;
         bool decodeGateHeld = false;
+        bool applyQueued = false;
         
         if (meta?.FilePath == null || !File.Exists(filePath))
+        {
+            meta.IsLoadingThumbnail = false;
             return;
+        }
 
         if (_scheduledWidths.TryGetValue(filePath, out var scheduledWidth) && scheduledWidth > width)
             return;
@@ -194,6 +205,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             if (_cache.TryGet(cacheKey, out var cached) && cached != null)
             {
                 EnqueueApply(new ApplyRequest(meta, cached, width));
+                applyQueued = true;
                 return;
             }
             
@@ -220,6 +232,11 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                     if (pixelData.TryAcquire())
                     {
                         EnqueueApply(new ApplyRequest(meta, pixelData, width));
+                        applyQueued = true;
+                    }
+                    else
+                    {
+                        pixelData.Dispose();
                     }
                 }
             }
@@ -235,11 +252,15 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         {
             _processing.TryRemove(filePath, out _);
             ClearScheduledWidth(filePath, width);
+
+            if (!applyQueued)
+                ClearLoadingIfIdle(meta, filePath);
         }
     }
 
     private async Task<PixelData?> DecodeImageAsync(string filePath, int targetWidth, CancellationToken ct)
     {
+        var sw = Stopwatch.StartNew();
         try
         {
             using var fs = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -347,6 +368,10 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             Telemetry.DecodeUnknownErrors.Add(1);
             _logger?.LogDebug(ex, "Decode error: {File}", filePath);
             return null;
+        }
+        finally
+        {
+            Telemetry.DecodeLatencyMs.Record(sw.Elapsed.TotalMilliseconds);
         }
     }
 
@@ -471,6 +496,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             {
                 _pendingApplyWidths.TryRemove(filePath, out _);
             }
+
+            ClearLoadingIfIdle(meta, filePath);
 
             data.Dispose();
         }
@@ -615,13 +642,33 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         ScheduleApply();
     }
 
-    public void ClearCache() => _cache.Clear();
+    public void ClearCache()
+    {
+        _cache.Clear();
+
+        while (_applyQueue.TryDequeue(out var apply))
+        {
+            Interlocked.Decrement(ref _pendingApplyCount);
+            _pendingApplyWidths.TryRemove(apply.Meta.FilePath, out _);
+            apply.Meta.IsLoadingThumbnail = false;
+            apply.Data.Dispose();
+        }
+    }
 
     public void ResetPendingState()
     {
         // 큐 비우기
-        while (_highQueue.TryDequeue(out _)) { Interlocked.Decrement(ref _pendingHighCount); }
-        while (_normalQueue.TryDequeue(out _)) { Interlocked.Decrement(ref _pendingNormalCount); }
+        while (_highQueue.TryDequeue(out var high))
+        {
+            Interlocked.Decrement(ref _pendingHighCount);
+            high.Meta.IsLoadingThumbnail = false;
+        }
+
+        while (_normalQueue.TryDequeue(out var normal))
+        {
+            Interlocked.Decrement(ref _pendingNormalCount);
+            normal.Meta.IsLoadingThumbnail = false;
+        }
         
         _processing.Clear();
         _scheduledWidths.Clear();
@@ -656,13 +703,35 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         }
     }
 
+    private void ClearLoadingIfIdle(ImageMetadata meta, string filePath)
+    {
+        if (_scheduledWidths.ContainsKey(filePath))
+            return;
+
+        if (_processing.ContainsKey(filePath))
+            return;
+
+        if (_pendingApplyWidths.ContainsKey(filePath))
+            return;
+
+        meta.IsLoadingThumbnail = false;
+    }
+
     #endregion
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
+        _disposed = true;
         _cts.Cancel();
         _cts.Dispose();
         _workerTimer?.Dispose();
+
+        while (_applyQueue.TryDequeue(out var apply))
+            apply.Data.Dispose();
+
         _decodeGate.Dispose();
         _applyGate.Dispose();
         _cache.Dispose();

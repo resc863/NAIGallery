@@ -17,6 +17,7 @@ using Microsoft.UI.Xaml.Media.Animation;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 
@@ -64,8 +65,7 @@ public sealed partial class ImageDetailPage : Page
     public ImageDetailPage()
     {
         InitializeComponent();
-        _service = ((App)Application.Current).Services.GetService(typeof(IImageIndexService)) as IImageIndexService
-                    ?? new ImageIndexService();
+        _service = ((App)Application.Current).GetRequiredService<IImageIndexService>();
         
         PointerWheelChanged += ImageDetailPage_PointerWheelChanged;
         SizeChanged += ImageDetailPage_SizeChanged;

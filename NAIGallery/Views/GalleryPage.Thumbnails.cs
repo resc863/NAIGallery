@@ -13,7 +13,7 @@ public sealed partial class GalleryPage
 
     private void EnqueueMeta(ImageMetadata meta, int decodeWidth, bool highPriority = false)
     {
-        try { (_service as ImageIndexService)?.Schedule(meta, decodeWidth, highPriority); }
+        try { _service.ScheduleThumbnail(meta, decodeWidth, highPriority); }
         catch { }
     }
 

@@ -1,10 +1,11 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
 
 namespace NAIGallery.Services;
@@ -19,7 +20,8 @@ public partial class ImageIndexService
 
         RemoveStaleEntries(folder);
 
-        int total = CountPngFiles(folder);
+        var files = EnumeratePngFiles(folder);
+        int total = files.Length;
         if (total == 0)
         {
             progress?.Report(1);
@@ -27,14 +29,12 @@ public partial class ImageIndexService
             return;
         }
 
-        int notifyBatch = Math.Max(1, total / 50);
-
         // Phase 1: Quick dimension scan
-        await ScanDimensionsAsync(folder, total, notifyBatch, ct).ConfigureAwait(false);
+        await ScanDimensionsAsync(folder, files, ct).ConfigureAwait(false);
         InvalidateSorted();
 
         // Phase 2: Full metadata extraction
-        await ExtractMetadataAsync(folder, total, notifyBatch, progress, ct).ConfigureAwait(false);
+        await ExtractMetadataAsync(folder, files, progress, ct).ConfigureAwait(false);
         
         progress?.Report(1);
         InvalidateSorted();
@@ -47,35 +47,34 @@ public partial class ImageIndexService
         var stale = _index.Keys
             .Where(k => k.StartsWith(folder, StringComparison.OrdinalIgnoreCase) && !File.Exists(k))
             .ToList();
+
+        bool removedAny = false;
             
         foreach (var p in stale)
         {
             if (_index.TryRemove(p, out var removed))
             {
                 _searchIndex.Remove(removed);
-                lock (_tagLock)
-                {
-                    foreach (var t in removed.Tags) 
-                        _tagSet.Remove(t);
-                }
-                InvalidateSorted();
+                RemoveTags(removed.Tags);
+                removedAny = true;
             }
         }
+
+        if (removedAny)
+            InvalidateSorted();
     }
 
-    private static int CountPngFiles(string folder)
+    private static string[] EnumeratePngFiles(string folder)
     {
-        int total = 0;
-        try 
-        { 
-            foreach (var _ in Directory.EnumerateFiles(folder, "*.png", SearchOption.AllDirectories)) 
-                total++; 
-        } 
+        try
+        {
+            return Directory.EnumerateFiles(folder, "*.png", SearchOption.AllDirectories).ToArray();
+        }
         catch { }
-        return total;
+        return [];
     }
 
-    private async Task ScanDimensionsAsync(string folder, int total, int notifyBatch, CancellationToken ct)
+    private async Task ScanDimensionsAsync(string folder, IReadOnlyList<string> files, CancellationToken ct)
     {
         var channel = System.Threading.Channels.Channel.CreateBounded<string>(
             new System.Threading.Channels.BoundedChannelOptions(256) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
@@ -87,7 +86,7 @@ public partial class ImageIndexService
         {
             try
             {
-                foreach (var file in Directory.EnumerateFiles(folder, "*.png", SearchOption.AllDirectories))
+                foreach (var file in files)
                 {
                     ct.ThrowIfCancellationRequested();
                     await channel.Writer.WriteAsync(file, ct).ConfigureAwait(false);
@@ -102,14 +101,14 @@ public partial class ImageIndexService
         {
             await foreach (var file in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                ProcessDimensionScan(file, folder, ref scanned, total, notifyBatch);
+                ProcessDimensionScan(file, folder, ref scanned);
             }
         }, ct)).ToList();
 
         await Task.WhenAll(consumers.Append(producer)).ConfigureAwait(false);
     }
 
-    private void ProcessDimensionScan(string file, string folder, ref long scanned, int total, int notifyBatch)
+    private void ProcessDimensionScan(string file, string folder, ref long scanned)
     {
         bool needsDimensions = !_index.TryGetValue(file, out var existing) || 
                                !existing.OriginalWidth.HasValue || 
@@ -133,23 +132,17 @@ public partial class ImageIndexService
                             Tags = new System.Collections.Generic.List<string>(),
                             LastWriteTimeTicks = new FileInfo(file).LastWriteTimeUtc.Ticks
                         };
-                        _index[file] = meta;
                     }
-                    else
-                    {
-                        meta.OriginalWidth = dims.Value.width;
-                        meta.OriginalHeight = dims.Value.height;
-                    }
+
+                    meta.OriginalWidth = dims.Value.width;
+                    meta.OriginalHeight = dims.Value.height;
+                    UpsertMetadata(meta, folder, notify: false);
                 }
             }
             catch { }
         }
 
-        long current = Interlocked.Increment(ref scanned);
-        if (current % notifyBatch == 0 || current == total)
-        {
-            InvalidateSorted();
-        }
+        Interlocked.Increment(ref scanned);
     }
 
     private static (int width, int height)? ExtractQuickDimensions(string filePath)
@@ -183,21 +176,21 @@ public partial class ImageIndexService
         catch { return null; }
     }
 
-    private async Task ExtractMetadataAsync(string folder, int total, int notifyBatch, IProgress<double>? progress, CancellationToken ct)
+    private async Task ExtractMetadataAsync(string folder, IReadOnlyList<string> files, IProgress<double>? progress, CancellationToken ct)
     {
         var channel = System.Threading.Channels.Channel.CreateBounded<string>(
             new System.Threading.Channels.BoundedChannelOptions(256) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
         
         int workerCount = Math.Max(1, Environment.ProcessorCount - 1);
         long processed = 0;
-        var tagBatches = new ConcurrentBag<System.Collections.Generic.IEnumerable<string>>();
         var sw = Stopwatch.StartNew();
+        int total = files.Count;
 
         var producer = Task.Run(async () =>
         {
             try
             {
-                foreach (var file in Directory.EnumerateFiles(folder, "*.png", SearchOption.AllDirectories))
+                foreach (var file in files)
                 {
                     ct.ThrowIfCancellationRequested();
                     await channel.Writer.WriteAsync(file, ct).ConfigureAwait(false);
@@ -212,17 +205,14 @@ public partial class ImageIndexService
         {
             await foreach (var file in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                ProcessMetadataExtraction(file, folder, tagBatches, ref processed, total, notifyBatch, progress, sw);
+                ProcessMetadataExtraction(file, folder, ref processed, total, progress, sw);
             }
         }, ct)).ToList();
 
         await Task.WhenAll(consumers.Append(producer)).ConfigureAwait(false);
-
-        MergeTagBatches(tagBatches);
     }
 
-    private void ProcessMetadataExtraction(string file, string folder, ConcurrentBag<System.Collections.Generic.IEnumerable<string>> tagBatches,
-        ref long processed, int total, int notifyBatch, IProgress<double>? progress, Stopwatch sw)
+    private void ProcessMetadataExtraction(string file, string folder, ref long processed, int total, IProgress<double>? progress, Stopwatch sw)
     {
         bool unchanged = false;
         if (_index.TryGetValue(file, out var existing))
@@ -253,42 +243,12 @@ public partial class ImageIndexService
             var meta = _metadataExtractor.Extract(file, folder, w, h);
             if (meta != null)
             {
-                meta.SearchText = SearchTextBuilder.BuildSearchText(meta);
-                meta.TokenSet = SearchTextBuilder.BuildFrozenTokenSet(meta);
-
-                if (_index.TryGetValue(file, out var oldMeta))
-                    _searchIndex.Remove(oldMeta);
-
-                _index[file] = meta;
-                tagBatches.Add(meta.Tags);
-                _searchIndex.Index(meta);
+                UpsertMetadata(meta, folder, notify: false);
             }
         }
 
         long proc = Interlocked.Increment(ref processed);
-        if (proc % notifyBatch == 0 || proc == total)
-        {
-            InvalidateSorted();
-        }
-        
         ThrottledProgress(proc, total, progress, sw);
-    }
-
-    private void MergeTagBatches(ConcurrentBag<System.Collections.Generic.IEnumerable<string>> tagBatches)
-    {
-        if (tagBatches.IsEmpty) return;
-        
-        lock (_tagLock)
-        {
-            foreach (var batch in tagBatches)
-            {
-                foreach (var t in batch)
-                {
-                    _tagSet.Add(t);
-                    _tagTrie.Add(t);
-                }
-            }
-        }
     }
 
     private static void ThrottledProgress(long processed, int total, IProgress<double>? progress, Stopwatch sw)
@@ -324,18 +284,14 @@ public partial class ImageIndexService
                     meta.NegativePrompt = parsed.NegativePrompt;
                 if (meta.Parameters == null && parsed.Parameters != null) 
                     meta.Parameters = parsed.Parameters;
-                    
-                meta.SearchText = SearchTextBuilder.BuildSearchText(meta);
-                meta.TokenSet = SearchTextBuilder.BuildFrozenTokenSet(meta);
-                _searchIndex.Index(meta);
-                _index[meta.FilePath] = meta;
-                InvalidateSorted();
-                
-                foreach (var t in meta.Tags) 
-                    _tagTrie.Add(t);
+
+                UpsertMetadata(meta, Path.GetDirectoryName(meta.FilePath) ?? string.Empty, notify: true);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to refresh metadata for {File}", meta.FilePath);
+        }
     }
     
     #endregion
