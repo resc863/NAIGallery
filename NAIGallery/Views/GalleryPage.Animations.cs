@@ -43,8 +43,8 @@ public sealed partial class GalleryPage
             }
             var visual = ElementCompositionPreview.GetElementVisual(source);
             var anim = _compositor.CreateScalarKeyFrameAnimation();
-            anim.Duration = TimeSpan.FromMilliseconds(120); // ´Ã¸° ½Ã°£
-            anim.InsertKeyFrame(1f, 0f, _compositor.CreateCubicBezierEasingFunction(new Vector2(0.25f, 0.1f), new Vector2(0.25f, 1f))); // Easing Ãß°¡
+            anim.Duration = TimeSpan.FromMilliseconds(120); // ëŠ˜ë¦° ì‹œê°„
+            anim.InsertKeyFrame(1f, 0f, _compositor.CreateCubicBezierEasingFunction(new Vector2(0.25f, 0.1f), new Vector2(0.25f, 1f))); // Easing ì¶”ê°€
             anim.Target = "Opacity";
             visual.StartAnimation("Opacity", anim);
             source.Opacity = 0; // ensure final state

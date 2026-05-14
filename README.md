@@ -1,10 +1,10 @@
-﻿# NAIGallery
+# NAIGallery
 
 NovelAI / Stable Diffusion 이미지를 위한 고성능 갤러리 뷰어입니다. PNG 메타데이터에서 프롬프트, 태그, 생성 파라미터를 자동으로 추출하여 검색 및 탐색할 수 있습니다.
 
 ![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)
 ![WinUI 3](https://img.shields.io/badge/WinUI-3-blue)
-![Windows App SDK](https://img.shields.io/badge/Windows%20App%20SDK-1.8-green)
+![Windows App SDK](https://img.shields.io/badge/Windows%20App%20SDK-2.0-green)
 
 ## ✨ 주요 기능
 
@@ -89,14 +89,34 @@ NAIGallery/
 ```powershell
 git clone https://github.com/resc863/NAIGallery.git
 cd NAIGallery
-dotnet build -c Release
+.\build_winui.ps1 -Action Build -Configuration Release -Platform x64
 ```
 
 ### 실행
-Visual Studio 2026에서 솔루션을 열고 F5로 실행하거나:
+Visual Studio 없이 `dotnet`/`winapp` CLI만으로 실행할 수 있습니다.
 ```powershell
-dotnet run --project NAIGallery
+.\build_winui.ps1 -Action Run -Configuration Debug -Platform x64
 ```
+
+또는 WinApp BuildTools가 등록한 `dotnet run` 경로를 직접 사용할 수 있습니다. 이 경로는 앱이 닫힐 때까지 터미널을 유지합니다.
+```powershell
+dotnet run --no-launch-profile --project .\NAIGallery\NAIGallery.csproj -p:Platform=x64 -p:WinAppRunDebugOutput=true
+```
+
+### 패키징 및 배포
+`winapp` CLI로 MSIX를 생성합니다. 산출물은 `artifacts\NAIGallery_<version>_<platform>.msix`에 생성됩니다.
+```powershell
+.\build_winui.ps1 -Action Package -Configuration Release -Platform x64
+```
+
+로컬 설치까지 진행하려면 개발 인증서를 신뢰해야 합니다. 관리자 PowerShell에서 다음을 실행하세요.
+```powershell
+.\build_winui.ps1 -Action Deploy -Configuration Release -Platform x64 -InstallCertificate
+```
+
+필요한 도구:
+- .NET SDK 10
+- Windows App Development CLI: `winget install Microsoft.WinAppCli --source winget`
 
 ## 🚀 사용법
 

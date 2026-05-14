@@ -42,7 +42,7 @@ public sealed partial class GalleryPage
         {
             var cas = ConnectedAnimationService.GetForCurrentView();
             cas.PrepareToAnimate("ForwardConnectedAnimation", source);
-            // ConfigurationÀ» Gravity·Î º¯°æ (´õ ÀÚ¿¬½º·¯¿î °î¼±)
+            // Configurationì„ Gravityë¡œ ë³€ê²½ (ë” ìì—°ìŠ¤ëŸ¬ìš´ ê³¡ì„ )
             var anim = cas.GetAnimation("ForwardConnectedAnimation");
             if (anim != null) anim.Configuration = new GravityConnectedAnimationConfiguration();
             Application.Current.Resources["ForwardCAStarted"] = false;

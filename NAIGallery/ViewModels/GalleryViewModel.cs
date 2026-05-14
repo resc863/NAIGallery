@@ -78,7 +78,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
-    /// DispatcherQueue¸¦ ¿ÜºÎ¿¡¼­ ¼³Á¤ÇÕ´Ï´Ù. Page¿¡¼­ È£ÃâÇØ¾ß ÇÕ´Ï´Ù.
+    /// DispatcherQueueë¥¼ ì™¸ë¶€ì—ì„œ ì„¤ì •í•©ë‹ˆë‹¤. Pageì—ì„œ í˜¸ì¶œí•´ì•¼ í•©ë‹ˆë‹¤.
     /// </summary>
     public void SetDispatcherQueue(DispatcherQueue dispatcherQueue)
     {
@@ -94,7 +94,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
     {
         if (_dispatcherQueue is null)
         {
-            // DispatcherQueue°¡ ¾øÀ¸¸é Á÷Á¢ ½ÇÇà (UI ½º·¹µå¿¡¼­ È£ÃâµÈ °ÍÀ¸·Î °¡Á¤)
+            // DispatcherQueueê°€ ì—†ìœ¼ë©´ ì§ì ‘ ì‹¤í–‰ (UI ìŠ¤ë ˆë“œì—ì„œ í˜¸ì¶œëœ ê²ƒìœ¼ë¡œ ê°€ì •)
             action();
             return;
         }
@@ -147,7 +147,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
             await _indexService.IndexFolderAsync(folder);
             await ApplySearchAsync();
             
-            // ÀÎµ¦½Ì ¿Ï·á ÈÄ ImagesChanged ÀÌº¥Æ® ¹ß»ı
+            // ì¸ë±ì‹± ì™„ë£Œ í›„ ImagesChanged ì´ë²¤íŠ¸ ë°œìƒ
             RunOnDispatcher(() => ImagesChanged?.Invoke(this, EventArgs.Empty));
         }
         finally
@@ -191,7 +191,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
 
     private async Task ApplySearchAsync(bool throttle = false)
     {
-        // ±âÁ¸ CTS Ãë¼Ò ¹× »õ CTS »ı¼º
+        // ê¸°ì¡´ CTS ì·¨ì†Œ ë° ìƒˆ CTS ìƒì„±
         var cts = new CancellationTokenSource();
         var oldCts = Interlocked.Exchange(ref _searchCts, cts);
         oldCts?.Cancel();

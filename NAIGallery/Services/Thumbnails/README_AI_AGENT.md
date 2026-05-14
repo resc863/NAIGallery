@@ -46,8 +46,8 @@ The pipeline is consolidated into a single file for simplicity:
 ## Implementation Notes
 
 ### Decoding Pipeline
-1. Check cache ¡æ return if hit
-2. Add to processing set ¡æ prevent duplicates
+1. Check cache â†’ return if hit
+2. Add to processing set â†’ prevent duplicates
 3. Acquire decode gate semaphore
 4. Decode via `BitmapDecoder` + `SoftwareBitmap`
 5. Copy to `ArrayPool<byte>` buffer

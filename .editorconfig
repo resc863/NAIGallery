@@ -1,0 +1,13 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,xaml,csproj,props,targets,sln,slnx,json,xml,manifest,ps1,md,gitattributes}]
+charset = utf-8
+
+[*.md]
+trim_trailing_whitespace = false

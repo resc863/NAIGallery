@@ -34,7 +34,7 @@ public sealed partial class SettingsPage : Page
 
             _service.ThumbnailCacheCapacity = cap;
             ThumbCacheTextBox.Text = cap.ToString();
-            CacheStatusText.Text = $"¸Ş¸ğ¸® Ä³½Ã Ç×¸ñ ¼ö: {cap}"; // display only
+            CacheStatusText.Text = $"ë©”ëª¨ë¦¬ ìºì‹œ í•­ëª© ìˆ˜: {cap}"; // display only
 
             var chkAnd = FindName("ChkAndMode") as CheckBox;
             var chkPartial = FindName("ChkPartial") as CheckBox;
@@ -44,7 +44,7 @@ public sealed partial class SettingsPage : Page
         catch
         {
             ThumbCacheTextBox.Text = _service.ThumbnailCacheCapacity.ToString();
-            CacheStatusText.Text = $"¸Ş¸ğ¸® Ä³½Ã Ç×¸ñ ¼ö: {_service.ThumbnailCacheCapacity}";
+            CacheStatusText.Text = $"ë©”ëª¨ë¦¬ ìºì‹œ í•­ëª© ìˆ˜: {_service.ThumbnailCacheCapacity}";
         }
     }
 
@@ -53,20 +53,20 @@ public sealed partial class SettingsPage : Page
         if (StatusText == null) return;
         try
         {
-            StatusText.Text = "Æú´õ ¼±ÅÃ Áß...";
+            StatusText.Text = "í´ë” ì„ íƒ ì¤‘...";
             var picker = new FolderPicker();
             var hwnd = WindowNative.GetWindowHandle(((App)Application.Current).MainWindow);
             InitializeWithWindow.Initialize(picker, hwnd);
             picker.FileTypeFilter.Add("*");
             var folder = await picker.PickSingleFolderAsync();
-            if (folder == null) { StatusText.Text = "Ãë¼ÒµÊ"; return; }
-            StatusText.Text = "ÀÎµ¦½Ì Áß...";
+            if (folder == null) { StatusText.Text = "ì·¨ì†Œë¨"; return; }
+            StatusText.Text = "ì¸ë±ì‹± ì¤‘...";
             await _service.IndexFolderAsync(folder.Path);
-            StatusText.Text = "¿Ï·á";
+            StatusText.Text = "ì™„ë£Œ";
         }
         catch (Exception ex)
         {
-            StatusText.Text = "¿À·ù: " + ex.Message;
+            StatusText.Text = "ì˜¤ë¥˜: " + ex.Message;
         }
     }
 
@@ -78,22 +78,25 @@ public sealed partial class SettingsPage : Page
             // Clamp via service property (has floor 100 in setter)
             _service.ThumbnailCacheCapacity = val;
             SaveSettings(settings => settings.ThumbCacheCapacity = _service.ThumbnailCacheCapacity);
-            CacheStatusText.Text = $"Ä³½Ã ¿ë·® Àû¿ëµÊ: {_service.ThumbnailCacheCapacity}";
+            CacheStatusText.Text = $"ìºì‹œ ìš©ëŸ‰ ì ìš©ë¨: {_service.ThumbnailCacheCapacity}";
         }
         else
         {
-            CacheStatusText.Text = "¼ıÀÚ¸¦ ÀÔ·ÂÇÏ¼¼¿ä";
+            CacheStatusText.Text = "ìˆ«ìë¥¼ ì…ë ¥í•˜ì„¸ìš”";
         }
     }
 
     private void ClearThumbCache_Click(object sender, RoutedEventArgs e)
     {
         _service.ClearThumbnailCache();
-        CacheStatusText.Text = "Ä³½Ã¸¦ »èÁ¦Çß½À´Ï´Ù";
+        CacheStatusText.Text = "ìºì‹œë¥¼ ì‚­ì œí–ˆìŠµë‹ˆë‹¤";
     }
 
     private void SearchMode_CheckChanged(object sender, RoutedEventArgs e)
     {
+        if (_vm == null)
+            return;
+
         var chkAnd = FindName("ChkAndMode") as CheckBox;
         var chkPartial = FindName("ChkPartial") as CheckBox;
         _vm.SearchAndMode = chkAnd?.IsChecked == true;

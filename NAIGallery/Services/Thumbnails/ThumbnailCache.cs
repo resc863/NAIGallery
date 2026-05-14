@@ -6,7 +6,7 @@ using System.Threading;
 namespace NAIGallery.Services.Thumbnails;
 
 /// <summary>
-/// µğÄÚµùµÈ ½æ³×ÀÏ ÇÈ¼¿ µ¥ÀÌÅÍ
+/// ë””ì½”ë”©ëœ ì¸ë„¤ì¼ í”½ì…€ ë°ì´í„°
 /// </summary>
 internal sealed class PixelData : IDisposable
 {
@@ -67,7 +67,7 @@ internal sealed class PixelData : IDisposable
 }
 
 /// <summary>
-/// °£´ÜÇÑ LRU ½æ³×ÀÏ Ä³½Ã
+/// ê°„ë‹¨í•œ LRU ì¸ë„¤ì¼ ìºì‹œ
 /// </summary>
 internal sealed class ThumbnailCache : IDisposable
 {
@@ -86,7 +86,7 @@ internal sealed class ThumbnailCache : IDisposable
 
     public ThumbnailCache(long capacityBytes)
     {
-        _capacity = Math.Max(1024 * 1024, capacityBytes); // ÃÖ¼Ò 1MB
+        _capacity = Math.Max(1024 * 1024, capacityBytes); // ìµœì†Œ 1MB
     }
 
     public long Capacity
@@ -108,7 +108,7 @@ internal sealed class ThumbnailCache : IDisposable
         {
             if (_map.TryGetValue(key, out var node))
             {
-                // LRU ¾÷µ¥ÀÌÆ®: ¸Ç ¾ÕÀ¸·Î ÀÌµ¿
+                // LRU ì—…ë°ì´íŠ¸: ë§¨ ì•ìœ¼ë¡œ ì´ë™
                 _lru.Remove(node);
                 _lru.AddFirst(node);
                 data = node.Value.Data;
@@ -123,7 +123,7 @@ internal sealed class ThumbnailCache : IDisposable
     {
         lock (_lock)
         {
-            // ÀÌ¹Ì Á¸ÀçÇÏ¸é Á¦°Å
+            // ì´ë¯¸ ì¡´ì¬í•˜ë©´ ì œê±°
             if (_map.TryGetValue(key, out var existing))
             {
                 _currentBytes -= existing.Value.Data.ByteCount;
@@ -132,7 +132,7 @@ internal sealed class ThumbnailCache : IDisposable
                 existing.Value.Data.Dispose();
             }
 
-            // »õ Ç×¸ñ Ãß°¡
+            // ìƒˆ í•­ëª© ì¶”ê°€
             var entry = new CacheEntry { Key = key, Data = data };
             var node = _lru.AddFirst(entry);
             _map[key] = node;

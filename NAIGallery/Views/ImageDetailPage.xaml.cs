@@ -152,7 +152,7 @@ public sealed partial class ImageDetailPage : Page
             path = Path.GetFullPath(path);
             if (!File.Exists(path))
             {
-                _ = ShowErrorAsync("ÀÌ¹ÌÁö ÆÄÀÏÀ» Ã£À» ¼ö ¾ø½À´Ï´Ù:\n" + path);
+                _ = ShowErrorAsync("ì´ë¯¸ì§€ íŒŒì¼ì„ ì°¾ì„ ìˆ˜ ì—†ìŠµë‹ˆë‹¤:\n" + path);
                 return;
             }
 
@@ -173,7 +173,7 @@ public sealed partial class ImageDetailPage : Page
         }
         catch (Exception ex)
         {
-            _ = ShowErrorAsync("ÀÌ¹ÌÁö¸¦ ¿©´Â Áß ¿À·ù°¡ ¹ß»ıÇß½À´Ï´Ù:\n" + ex.Message);
+            _ = ShowErrorAsync("ì´ë¯¸ì§€ë¥¼ ì—¬ëŠ” ì¤‘ ì˜¤ë¥˜ê°€ ë°œìƒí–ˆìŠµë‹ˆë‹¤:\n" + ex.Message);
         }
     }
 
@@ -789,9 +789,9 @@ public sealed partial class ImageDetailPage : Page
             if (this.XamlRoot == null) return;
             var dlg = new ContentDialog
             {
-                Title = "¿À·ù",
+                Title = "ì˜¤ë¥˜",
                 Content = message,
-                CloseButtonText = "È®ÀÎ",
+                CloseButtonText = "í™•ì¸",
                 XamlRoot = this.XamlRoot
             };
             await dlg.ShowAsync();

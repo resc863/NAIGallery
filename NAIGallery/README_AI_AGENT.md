@@ -10,23 +10,23 @@
 
 ```
 NAIGallery/
-¦§¦¡ App.xaml.cs              # DI, service registration
-¦§¦¡ MainWindow.xaml.cs       # Navigation host
-¦§¦¡ Controls/                # Custom UI controls (AspectPresenter)
-¦§¦¡ Converters/              # XAML value converters
-¦§¦¡ Infrastructure/          # AppDefaults, AppSettings, StringPool, Telemetry
-¦§¦¡ Models/                  # ImageMetadata, CharacterPrompt, ParamEntry
-¦§¦¡ Services/                # Core business logic
-¦¢   ¦§¦¡ ImageIndexService.cs          # Main facade (partial class)
-¦¢   ¦§¦¡ ImageIndexService.Indexing.cs # Folder indexing logic
-¦¢   ¦§¦¡ ImageIndexService.Search.cs   # Search & tag suggestion
-¦¢   ¦§¦¡ ImageIndexService.Persistence.cs # Index load/save
-¦¢   ¦§¦¡ Metadata/            # PNG metadata extraction
-¦¢   ¦§¦¡ Search/              # Token search index
-¦¢   ¦§¦¡ Tags/                # TagTrie for suggestions
-¦¢   ¦¦¦¡ Thumbnails/          # Thumbnail pipeline (single file)
-¦§¦¡ ViewModels/              # GalleryViewModel (MVVM)
-¦¦¦¡ Views/                   # UI pages (partial classes)
+â”œâ”€ App.xaml.cs              # DI, service registration
+â”œâ”€ MainWindow.xaml.cs       # Navigation host
+â”œâ”€ Controls/                # Custom UI controls (AspectPresenter)
+â”œâ”€ Converters/              # XAML value converters
+â”œâ”€ Infrastructure/          # AppDefaults, AppSettings, StringPool, Telemetry
+â”œâ”€ Models/                  # ImageMetadata, CharacterPrompt, ParamEntry
+â”œâ”€ Services/                # Core business logic
+â”‚   â”œâ”€ ImageIndexService.cs          # Main facade (partial class)
+â”‚   â”œâ”€ ImageIndexService.Indexing.cs # Folder indexing logic
+â”‚   â”œâ”€ ImageIndexService.Search.cs   # Search & tag suggestion
+â”‚   â”œâ”€ ImageIndexService.Persistence.cs # Index load/save
+â”‚   â”œâ”€ Metadata/            # PNG metadata extraction
+â”‚   â”œâ”€ Search/              # Token search index
+â”‚   â”œâ”€ Tags/                # TagTrie for suggestions
+â”‚   â””â”€ Thumbnails/          # Thumbnail pipeline (single file)
+â”œâ”€ ViewModels/              # GalleryViewModel (MVVM)
+â””â”€ Views/                   # UI pages (partial classes)
 ```
 
 ## How Things Fit Together

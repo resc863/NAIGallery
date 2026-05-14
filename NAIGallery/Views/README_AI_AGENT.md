@@ -43,7 +43,7 @@ The gallery page is split into multiple files by responsibility:
 ### Connected Animation Flow
 1. Gallery: `PrepareToAnimate("ForwardConnectedAnimation", element)` on navigation
 2. Detail: `RequestStartForwardConnectedAnimation()` after image loads
-3. Back: `PrepareToAnimate("BackConnectedAnimation", DetailImage)` ¡æ gallery receives
+3. Back: `PrepareToAnimate("BackConnectedAnimation", DetailImage)` â†’ gallery receives
 
 ### Viewport Tracking
 - `_viewStartIndex`, `_viewEndIndex` track visible item range

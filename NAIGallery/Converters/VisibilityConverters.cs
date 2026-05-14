@@ -27,8 +27,8 @@ public abstract class VisibilityConverterBase : IValueConverter
 
 /// <summary>
 /// Converts boolean values to Visibility states.
-/// Default: true ¡æ Visible, false ¡æ Collapsed.
-/// With parameter "Invert": true ¡æ Collapsed, false ¡æ Visible.
+/// Default: true â†’ Visible, false â†’ Collapsed.
+/// With parameter "Invert": true â†’ Collapsed, false â†’ Visible.
 /// </summary>
 public sealed class BoolToVisibilityConverter : VisibilityConverterBase
 {
@@ -38,8 +38,8 @@ public sealed class BoolToVisibilityConverter : VisibilityConverterBase
 
 /// <summary>
 /// Converts null values to Visibility states.
-/// Default: null ¡æ Visible, non-null ¡æ Collapsed (useful for loading labels).
-/// With parameter "Invert": null ¡æ Collapsed, non-null ¡æ Visible.
+/// Default: null â†’ Visible, non-null â†’ Collapsed (useful for loading labels).
+/// With parameter "Invert": null â†’ Collapsed, non-null â†’ Visible.
 /// </summary>
 public sealed class NullToVisibilityConverter : VisibilityConverterBase
 {

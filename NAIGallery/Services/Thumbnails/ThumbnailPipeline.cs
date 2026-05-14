@@ -19,7 +19,7 @@ using Windows.Storage.Streams;
 namespace NAIGallery.Services;
 
 /// <summary>
-/// ´Ü¼øÇÏ°í ¾ÈÁ¤ÀûÀÎ ½æ³×ÀÏ ÆÄÀÌÇÁ¶óÀÎ
+/// ë‹¨ìˆœí•˜ê³  ì•ˆì •ì ì¸ ì¸ë„¤ì¼ íŒŒì´í”„ë¼ì¸
 /// </summary>
 internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 {
@@ -27,36 +27,36 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private readonly ThumbnailCache _cache;
     private DispatcherQueue? _dispatcher;
     
-    // µ¿½Ã µğÄÚµù Á¦ÇÑ
+    // ë™ì‹œ ë””ì½”ë”© ì œí•œ
     private readonly SemaphoreSlim _decodeGate;
     private readonly SemaphoreSlim _applyGate = new(4, 4);
     
-    // ¿äÃ» Å¥
+    // ìš”ì²­ í
     private readonly ConcurrentQueue<ThumbnailRequest> _highQueue = new();
     private readonly ConcurrentQueue<ThumbnailRequest> _normalQueue = new();
     private readonly ConcurrentDictionary<string, int> _scheduledWidths = new(StringComparer.OrdinalIgnoreCase);
     
-    // UI Àû¿ë Å¥
+    // UI ì ìš© í
     private readonly ConcurrentQueue<ApplyRequest> _applyQueue = new();
     private readonly ConcurrentDictionary<string, int> _pendingApplyWidths = new(StringComparer.OrdinalIgnoreCase);
     
-    // »óÅÂ ÃßÀû
+    // ìƒíƒœ ì¶”ì 
     private readonly ConcurrentDictionary<string, int> _processing = new(StringComparer.OrdinalIgnoreCase);
     private int _pendingHighCount;
     private int _pendingNormalCount;
     private int _pendingApplyCount;
     
-    // ¿öÄ¿ °ü¸®
+    // ì›Œì»¤ ê´€ë¦¬
     private readonly CancellationTokenSource _cts = new();
     private int _workerCount;
     private readonly int _maxWorkers;
     
-    // UI »óÅÂ
+    // UI ìƒíƒœ
     private volatile bool _applySuspended;
     private int _applyScheduled;
     private bool _disposed;
     
-    // Å¸ÀÌ¸Ó
+    // íƒ€ì´ë¨¸
     private Timer? _workerTimer;
     
     public event Action<ImageMetadata>? ThumbnailApplied;
@@ -84,17 +84,17 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
         if (_workerTimer == null)
         {
-            // ¿öÄ¿ °ü¸® Å¸ÀÌ¸Ó ½ÃÀÛ
+            // ì›Œì»¤ ê´€ë¦¬ íƒ€ì´ë¨¸ ì‹œì‘
             _workerTimer = new Timer(OnWorkerTimerTick, null, 100, 100);
         }
         
-        // ÃÊ±â ¿öÄ¿ ½ÃÀÛ
+        // ì´ˆê¸° ì›Œì»¤ ì‹œì‘
         EnsureWorkers(2);
     }
 
     private void OnWorkerTimerTick(object? state)
     {
-        // Å¥¿¡ Ç×¸ñÀÌ ÀÖÀ¸¸é ¿öÄ¿ Ãß°¡
+        // íì— í•­ëª©ì´ ìˆìœ¼ë©´ ì›Œì»¤ ì¶”ê°€
         int pending = Volatile.Read(ref _pendingHighCount) + Volatile.Read(ref _pendingNormalCount);
         if (pending > 0)
         {
@@ -102,7 +102,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             EnsureWorkers(needed);
         }
         
-        // Àû¿ë Å¥ Ã³¸®
+        // ì ìš© í ì²˜ë¦¬
         if (Volatile.Read(ref _pendingApplyCount) > 0 && !_applySuspended)
         {
             ScheduleApply();
@@ -145,7 +145,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                     idleCount++;
                     if (idleCount > 10 && _workerCount > 2)
                     {
-                        // À¯ÈŞ ¿öÄ¿ Á¾·á
+                        // ìœ íœ´ ì›Œì»¤ ì¢…ë£Œ
                         break;
                     }
                     await Task.Delay(50, token);
@@ -188,11 +188,11 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         if (_scheduledWidths.TryGetValue(filePath, out var scheduledWidth) && scheduledWidth > width)
             return;
         
-        // ÀÌ¹Ì ÃæºĞÇÑ ÇØ»óµµ°¡ ÀÖÀ¸¸é ½ºÅµ
+        // ì´ë¯¸ ì¶©ë¶„í•œ í•´ìƒë„ê°€ ìˆìœ¼ë©´ ìŠ¤í‚µ
         if ((meta.ThumbnailPixelWidth ?? 0) >= width)
             return;
         
-        // ÀÌ¹Ì Ã³¸® ÁßÀÌ¸é ½ºÅµ
+        // ì´ë¯¸ ì²˜ë¦¬ ì¤‘ì´ë©´ ìŠ¤í‚µ
         int processingWidth = _processing.GetOrAdd(filePath, 0);
         if (processingWidth >= width)
             return;
@@ -200,7 +200,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         
         try
         {
-            // Ä³½Ã È®ÀÎ
+            // ìºì‹œ í™•ì¸
             string cacheKey = MakeCacheKey(filePath, width);
             if (_cache.TryGet(cacheKey, out var cached) && cached != null)
             {
@@ -209,7 +209,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 return;
             }
             
-            // µğÄÚµù
+            // ë””ì½”ë”©
             if (ct.IsCancellationRequested)
                 return;
 
@@ -281,7 +281,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             uint srcH = decoder.PixelHeight;
             if (srcW == 0 || srcH == 0) return null;
             
-            // ½ºÄÉÀÏ °è»ê
+            // ìŠ¤ì¼€ì¼ ê³„ì‚°
             double scale = Math.Min(1.0, targetWidth / (double)srcW);
             uint outW = (uint)Math.Max(1, Math.Round(srcW * scale));
             uint outH = (uint)Math.Max(1, Math.Round(srcH * scale));
@@ -305,7 +305,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             }
             catch (COMException)
             {
-                // Æ÷¸Ë º¯È¯ ½ÇÆĞ ½Ã ¿øº» Æ÷¸ËÀ¸·Î ½Ãµµ ÈÄ º¯È¯
+                // í¬ë§· ë³€í™˜ ì‹¤íŒ¨ ì‹œ ì›ë³¸ í¬ë§·ìœ¼ë¡œ ì‹œë„ í›„ ë³€í™˜
                 try
                 {
                     var temp = await decoder.GetSoftwareBitmapAsync(
@@ -473,7 +473,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
             meta.ThumbnailPixelWidth = width;
             meta.IsLoadingThumbnail = false;
             
-            // ¿øº» Å©±â ¾÷µ¥ÀÌÆ®
+            // ì›ë³¸ í¬ê¸° ì—…ë°ì´íŠ¸
             if (!meta.OriginalWidth.HasValue || !meta.OriginalHeight.HasValue)
             {
                 meta.AspectRatio = data.Width / (double)Math.Max(1, data.Height);
@@ -569,13 +569,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     public void UpdateViewport(IReadOnlyList<ImageMetadata> orderedVisible, IReadOnlyList<ImageMetadata> bufferItems, int width)
     {
-        // È­¸é¿¡ º¸ÀÌ´Â Ç×¸ñ ¿ì¼±
+        // í™”ë©´ì— ë³´ì´ëŠ” í•­ëª© ìš°ì„ 
         foreach (var meta in orderedVisible)
         {
             Schedule(meta, width, highPriority: true);
         }
         
-        // ¹öÆÛ Ç×¸ñ
+        // ë²„í¼ í•­ëª©
         foreach (var meta in bufferItems)
         {
             Schedule(meta, width, highPriority: false);
@@ -633,7 +633,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 remainder.Add(req);
         }
         
-        // ¿ì¼± Ç×¸ñ ¸ÕÀú ´Ù½Ã Ãß°¡
+        // ìš°ì„  í•­ëª© ë¨¼ì € ë‹¤ì‹œ ì¶”ê°€
         foreach (var req in priority)
             _applyQueue.Enqueue(req);
         foreach (var req in remainder)
@@ -657,7 +657,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 
     public void ResetPendingState()
     {
-        // Å¥ ºñ¿ì±â
+        // í ë¹„ìš°ê¸°
         while (_highQueue.TryDequeue(out var high))
         {
             Interlocked.Decrement(ref _pendingHighCount);
@@ -673,7 +673,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         _processing.Clear();
         _scheduledWidths.Clear();
         
-        // Àû¿ë Å¥ À¯Áö (ÀÌ¹Ì µğÄÚµùµÈ °ÍÀº Àû¿ë)
+        // ì ìš© í ìœ ì§€ (ì´ë¯¸ ë””ì½”ë”©ëœ ê²ƒì€ ì ìš©)
         ScheduleApply();
     }
 
