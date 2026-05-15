@@ -37,6 +37,59 @@ function Get-RuntimeIdentifier([string]$platform) {
     }
 }
 
+function Get-VsDevCmdPath {
+    $vswhere = @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
+        "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+
+    if ($vswhere) {
+        $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if ($installPath) {
+            $candidate = Join-Path $installPath 'Common7\Tools\VsDevCmd.bat'
+            if (Test-Path -LiteralPath $candidate) {
+                return $candidate
+            }
+        }
+    }
+
+    Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio" -Recurse -Filter VsDevCmd.bat -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
+function Get-ToolchainArch([string]$platform) {
+    switch ($platform) {
+        'x64' { 'x64' }
+        'x86' { 'x86' }
+        'ARM64' { 'arm64' }
+    }
+}
+
+function Quote-CmdArgument([string]$value) {
+    '"' + ($value -replace '"', '\"') + '"'
+}
+
+function Invoke-NativeAotPublish([string[]]$Arguments) {
+    if (Get-Command link.exe -ErrorAction SilentlyContinue) {
+        dotnet @Arguments
+        return
+    }
+
+    $vsDevCmd = Get-VsDevCmdPath
+    if (-not $vsDevCmd) {
+        throw "NativeAOT publish requires the Visual Studio Desktop development with C++ workload. VsDevCmd.bat was not found."
+    }
+
+    $arch = Get-ToolchainArch $Platform
+    $dotnetArgs = ($Arguments | ForEach-Object { Quote-CmdArgument $_ }) -join ' '
+    $cmd = "call $(Quote-CmdArgument $vsDevCmd) -arch=$arch -host_arch=x64 && dotnet $dotnetArgs"
+    cmd.exe /d /s /c $cmd
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "NativeAOT publish failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Get-TargetFramework {
     [xml]$project = Get-Content -LiteralPath $projectPath
     $targetFramework = $project.Project.PropertyGroup |
@@ -64,10 +117,46 @@ function Build-App {
     dotnet build $projectPath -c $Configuration -p:Platform=$Platform
 }
 
-function Get-BuildOutput {
+function Publish-App {
+    if ($Clean) {
+        dotnet clean $projectPath -c $Configuration -p:Platform=$Platform
+    }
+
+    $runtimeIdentifier = Get-RuntimeIdentifier $Platform
+    $args = @(
+        'publish', $projectPath,
+        '-c', $Configuration,
+        '-r', $runtimeIdentifier,
+        '--self-contained', 'true',
+        "-p:Platform=$Platform"
+    )
+
+    Invoke-NativeAotPublish $args
+}
+
+function Get-AppOutput([switch]$Published) {
     $targetFramework = Get-TargetFramework
     $runtimeIdentifier = Get-RuntimeIdentifier $Platform
-    $outputDir = Join-Path $repoRoot "NAIGallery\bin\$Platform\$Configuration\$targetFramework\$runtimeIdentifier"
+
+    $buildOutputDir = Join-Path $repoRoot "NAIGallery\bin\$Platform\$Configuration\$targetFramework\$runtimeIdentifier"
+    $outputDir = $buildOutputDir
+
+    if ($Published) {
+        $publishDir = Join-Path $repoRoot "NAIGallery\bin\$Configuration\$targetFramework\$runtimeIdentifier\publish"
+        if (-not (Test-Path -LiteralPath $publishDir)) {
+            $publishDir = Join-Path $buildOutputDir 'publish'
+        }
+
+        if (-not (Test-Path -LiteralPath $publishDir)) {
+            throw "NativeAOT publish output was not found. Expected $publishDir."
+        }
+
+        $outputDir = Join-Path $artifactsDir "native-layout\$Configuration-$Platform"
+        New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+        Copy-Item -Path (Join-Path $buildOutputDir '*') -Destination $outputDir -Recurse -Force
+        Copy-Item -Path (Join-Path $publishDir '*') -Destination $outputDir -Recurse -Force
+    }
+
     $manifestPath = Join-Path $outputDir 'AppxManifest.xml'
     $exePath = Join-Path $outputDir 'NAIGallery.exe'
 
@@ -86,10 +175,10 @@ function Get-BuildOutput {
     }
 }
 
-function Package-App {
+function Package-App([switch]$Published) {
     New-Item -ItemType Directory -Force -Path $artifactsDir | Out-Null
 
-    $build = Get-BuildOutput
+    $build = Get-AppOutput -Published:$Published
     $version = Get-PackageVersion $build.Manifest
     $packagePath = Join-Path $artifactsDir "NAIGallery_${version}_$Platform.msix"
 
@@ -137,7 +226,7 @@ function Stop-RepoAppInstances {
 function Run-App {
     Stop-RepoAppInstances
 
-    $build = Get-BuildOutput
+    $build = Get-AppOutput
     $looseLayoutDir = Join-Path $artifactsDir "loose-layout\$Configuration-$Platform"
     New-Item -ItemType Directory -Force -Path $looseLayoutDir | Out-Null
 
@@ -172,16 +261,16 @@ switch ($Action) {
         if ($Configuration -ne 'Release') {
             Write-Warning 'MSIX packages are usually produced from Release builds.'
         }
-        Build-App
-        Package-App | Format-List
+        Publish-App
+        Package-App -Published | Format-List
     }
     'Deploy' {
         if ($Configuration -ne 'Release') {
             Write-Warning 'Deploying a Debug package is useful for testing only.'
         }
         Stop-RepoAppInstances
-        Build-App
-        $package = Package-App
+        Publish-App
+        $package = Package-App -Published | Select-Object -Last 1
 
         if ($InstallCertificate) {
             winapp cert install $package.Certificate

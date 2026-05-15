@@ -73,12 +73,11 @@ NAIGallery/
 | 기술 | 버전 | 용도 |
 |------|------|------|
 | .NET | 10.0 | 런타임 |
-| Windows App SDK | 1.8 | UI 프레임워크 |
+| Windows App SDK | 2.0 | UI 프레임워크 |
 | WinUI 3 | - | XAML UI |
-| CommunityToolkit.Mvvm | 8.4 | MVVM 패턴 |
-| CommunityToolkit.WinUI | 8.2 | UI 컴포넌트 |
-| System.Text.Json | 10.0 | JSON 파싱 |
-| MetadataExtractor | 2.9 | EXIF/PNG 메타데이터 |
+| NativeAOT | .NET 10 | Release publish 최적화 |
+| System.Text.Json source generation | 10.0 | AOT 친화 JSON 파싱 |
+| 자체 PNG 청크 파서 | - | NovelAI / Stable Diffusion 메타데이터 |
 
 ## 📦 설치
 
@@ -104,7 +103,7 @@ dotnet run --no-launch-profile --project .\NAIGallery\NAIGallery.csproj -p:Platf
 ```
 
 ### 패키징 및 배포
-`winapp` CLI로 MSIX를 생성합니다. 산출물은 `artifacts\NAIGallery_<version>_<platform>.msix`에 생성됩니다.
+Release 패키징은 `dotnet publish`의 NativeAOT 출력물을 `winapp` CLI로 MSIX화합니다. 산출물은 `artifacts\NAIGallery_<version>_<platform>.msix`에 생성됩니다.
 ```powershell
 .\build_winui.ps1 -Action Package -Configuration Release -Platform x64
 ```
@@ -117,6 +116,7 @@ dotnet run --no-launch-profile --project .\NAIGallery\NAIGallery.csproj -p:Platf
 필요한 도구:
 - .NET SDK 10
 - Windows App Development CLI: `winget install Microsoft.WinAppCli --source winget`
+- NativeAOT publish용 Visual Studio "Desktop development with C++" 워크로드 또는 `link.exe`가 잡히는 Developer PowerShell
 
 ## 🚀 사용법
 

@@ -5,7 +5,6 @@ using Windows.Storage.Pickers;
 using WinRT.Interop;
 using System;
 using NAIGallery.ViewModels;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 
@@ -33,8 +32,9 @@ public sealed partial class SettingsPage : Page
                 cap = settings.ThumbCacheCapacity.Value;
 
             _service.ThumbnailCacheCapacity = cap;
-            ThumbCacheTextBox.Text = cap.ToString();
-            CacheStatusText.Text = $"메모리 캐시 항목 수: {cap}"; // display only
+            cap = _service.ThumbnailCacheCapacity;
+            ThumbCacheTextBox.Text = BytesToMegabytes(cap).ToString();
+            CacheStatusText.Text = $"메모리 캐시 용량: {BytesToMegabytes(cap)} MB";
 
             var chkAnd = FindName("ChkAndMode") as CheckBox;
             var chkPartial = FindName("ChkPartial") as CheckBox;
@@ -43,8 +43,8 @@ public sealed partial class SettingsPage : Page
         }
         catch
         {
-            ThumbCacheTextBox.Text = _service.ThumbnailCacheCapacity.ToString();
-            CacheStatusText.Text = $"메모리 캐시 항목 수: {_service.ThumbnailCacheCapacity}";
+            ThumbCacheTextBox.Text = BytesToMegabytes(_service.ThumbnailCacheCapacity).ToString();
+            CacheStatusText.Text = $"메모리 캐시 용량: {BytesToMegabytes(_service.ThumbnailCacheCapacity)} MB";
         }
     }
 
@@ -75,10 +75,9 @@ public sealed partial class SettingsPage : Page
         if (ThumbCacheTextBox == null || CacheStatusText == null) return;
         if (int.TryParse(ThumbCacheTextBox.Text, out var val))
         {
-            // Clamp via service property (has floor 100 in setter)
-            _service.ThumbnailCacheCapacity = val;
+            _service.ThumbnailCacheCapacity = MegabytesToBytes(val);
             SaveSettings(settings => settings.ThumbCacheCapacity = _service.ThumbnailCacheCapacity);
-            CacheStatusText.Text = $"캐시 용량 적용됨: {_service.ThumbnailCacheCapacity}";
+            CacheStatusText.Text = $"캐시 용량 적용됨: {BytesToMegabytes(_service.ThumbnailCacheCapacity)} MB";
         }
         else
         {
@@ -117,5 +116,14 @@ public sealed partial class SettingsPage : Page
             settings.Save();
         }
         catch { }
+    }
+
+    private static int BytesToMegabytes(int bytes)
+        => Math.Max(1, (int)Math.Round(bytes / 1024.0 / 1024.0));
+
+    private static int MegabytesToBytes(int megabytes)
+    {
+        long bytes = Math.Max(1, megabytes) * 1024L * 1024L;
+        return bytes > int.MaxValue ? int.MaxValue : (int)bytes;
     }
 }

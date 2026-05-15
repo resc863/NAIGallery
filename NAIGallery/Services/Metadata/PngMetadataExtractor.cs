@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
 using Windows.Graphics.Imaging;
 
@@ -15,9 +14,6 @@ namespace NAIGallery.Services.Metadata;
 /// </summary>
 internal sealed class PngMetadataExtractor : IMetadataExtractor
 {
-    private readonly ILogger<PngMetadataExtractor>? _logger;
-    public PngMetadataExtractor(ILogger<PngMetadataExtractor>? logger = null) => _logger = logger;
-
     public ImageMetadata? Extract(string file, string rootFolder, int? knownWidth = null, int? knownHeight = null)
     {
         try { if (!File.Exists(file)) return null; } catch { return null; }

@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using NAIGallery.Models;
 using NAIGallery.Services.Metadata;
@@ -23,8 +22,6 @@ public partial class ImageIndexService : IImageIndexService, IDisposable
     private const string IndexFileName = "nai_index.json";
 
     private DispatcherQueue? _dispatcherQueue;
-    private readonly ILogger<ImageIndexService>? _logger;
-
     private readonly ITokenSearchIndex _searchIndex;
     private readonly IThumbnailPipeline _thumbPipeline;
     private readonly IMetadataExtractor _metadataExtractor;
@@ -48,7 +45,7 @@ public partial class ImageIndexService : IImageIndexService, IDisposable
 
     #region Constructor
     
-    public ImageIndexService(ITokenSearchIndex searchIndex, IThumbnailPipeline thumbPipeline, IMetadataExtractor extractor, ILogger<ImageIndexService>? logger = null)
+    public ImageIndexService(ITokenSearchIndex searchIndex, IThumbnailPipeline thumbPipeline, IMetadataExtractor extractor)
     {
         ArgumentNullException.ThrowIfNull(searchIndex);
         ArgumentNullException.ThrowIfNull(thumbPipeline);
@@ -57,7 +54,6 @@ public partial class ImageIndexService : IImageIndexService, IDisposable
         _searchIndex = searchIndex;
         _thumbPipeline = thumbPipeline;
         _metadataExtractor = extractor;
-        _logger = logger;
         
         _thumbPipeline.ThumbnailApplied += HandleThumbnailApplied;
     }
@@ -192,6 +188,18 @@ public partial class ImageIndexService : IImageIndexService, IDisposable
         {
             _searchIndex.Remove(oldMeta);
             RemoveTags(oldMeta.Tags);
+
+            // Keep the existing metadata object alive so realized tiles and
+            // pending thumbnail requests do not point at stale instances.
+            CopyMetadata(meta, oldMeta);
+            PrepareMetadata(oldMeta, folder);
+
+            _index[oldMeta.FilePath] = oldMeta;
+            _searchIndex.Index(oldMeta);
+            AddTags(oldMeta.Tags);
+
+            InvalidateSorted(notify);
+            return;
         }
 
         _index[meta.FilePath] = meta;
@@ -199,6 +207,25 @@ public partial class ImageIndexService : IImageIndexService, IDisposable
         AddTags(meta.Tags);
 
         InvalidateSorted(notify);
+    }
+
+    private static void CopyMetadata(ImageMetadata source, ImageMetadata target)
+    {
+        target.FilePath = source.FilePath;
+        target.RelativePath = source.RelativePath;
+        target.Prompt = source.Prompt;
+        target.NegativePrompt = source.NegativePrompt;
+        target.BasePrompt = source.BasePrompt;
+        target.BaseNegativePrompt = source.BaseNegativePrompt;
+        target.CharacterPrompts = source.CharacterPrompts;
+        target.Parameters = source.Parameters;
+        target.Tags = source.Tags;
+        target.SearchText = source.SearchText;
+        target.TokenSet = source.TokenSet;
+        target.LastWriteTimeTicks = source.LastWriteTimeTicks;
+        target.OriginalWidth = source.OriginalWidth;
+        target.OriginalHeight = source.OriginalHeight;
+        target.AspectRatio = source.AspectRatio;
     }
 
     private void AddTags(IEnumerable<string>? tags)

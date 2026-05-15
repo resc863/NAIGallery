@@ -10,7 +10,7 @@ Files
 - `PngTextChunkReader` (in parent Services): low-level reader for PNG text chunks used by PNG extractor.
 
 Extension points
-- Implement `IMetadataExtractor` for JPEG/WebP/etc and add to `App` composite registration.
+- Implement `IMetadataExtractor` for JPEG/WebP/etc and add to `AppServices` composite registration.
 
 Testing tips
 - Provide sample PNGs with embedded `tEXt`/`iTXt`/`zTXt` chunks.

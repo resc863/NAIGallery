@@ -19,7 +19,6 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI; // Added for Win32Interop
 using System.Collections.Generic;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 
@@ -154,8 +153,7 @@ public sealed partial class GalleryPage : Page
 
     private void Gallery_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        EnqueueVisibleStrict();
-        _ = ProcessQueueAsync();
+        RequestReflow(40);
     }
 
     protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -402,23 +400,13 @@ public sealed partial class GalleryPage : Page
     {
         try
         {
+            _imageIndexMap = null;
+
             // 이미지 목록이 변경되면 즉시 가시 영역 썸네일 로드
             EnqueueVisibleStrict();
             _ = ProcessQueueAsync();
             UpdateSchedulerViewport();
-            
-            // UI 강제 갱신 (인덱싱 중에도 새로 추가된 아이템 즉시 표시)
-            if (GalleryView != null)
-            {
-                try
-                {
-                    // ItemsRepeater 레이아웃 갱신
-                    GalleryView.InvalidateMeasure();
-                    GalleryView.InvalidateArrange();
-                    GalleryView.UpdateLayout();
-                }
-                catch { }
-            }
+            RequestReflow(20);
             
             // 인덱싱 중이 아닐 때만 전체 프라이밍 수행
             if (!ViewModel.IsIndexing)
@@ -513,6 +501,8 @@ public sealed partial class GalleryPage : Page
 
     private void OnBeforeCollectionRefresh(object? sender, EventArgs e)
     {
+        _imageIndexMap = null;
+
         // 컬렉션 새로고침 전 스크롤 위치 저장
         if (_scrollViewer != null)
         {
@@ -522,6 +512,8 @@ public sealed partial class GalleryPage : Page
     
     private void OnAfterCollectionRefresh(object? sender, EventArgs e)
     {
+        _imageIndexMap = null;
+
         // 컬렉션 새로고침 후 스크롤 위치 복원
         if (_scrollViewer != null && _savedScrollOffset > 0)
         {

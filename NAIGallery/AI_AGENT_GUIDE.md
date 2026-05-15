@@ -10,7 +10,7 @@ Overview
   - Controls/Converters: small UI helpers.
 
 Key entry points
-- `App.xaml.cs`: wires DI and logging; registers `IMetadataExtractor` and `IImageIndexService`. Applies persisted settings such as thumbnail cache capacity.
+- `App.xaml.cs`: creates the AOT-friendly `AppServices` singleton container and applies persisted settings such as thumbnail cache capacity.
 - `MainWindow.xaml.cs`: hosts navigation and cancels connected animations when switching sections.
 - `Views/GalleryPage*`: virtualized image grid with viewport-aware thumbnail scheduling and smooth zoom/CA.
 - `Views/ImageDetailPage`: shows a single image with connected animation, zoom/pan, and metadata.
@@ -20,7 +20,7 @@ Threading model
 - UI: all XAML-bound updates (image sources, layout invalidation, animations) are marshaled via `DispatcherQueue`.
 
 Extensibility
-- Metadata formats: add a new `IMetadataExtractor` implementation and register it in `App` composite.
+- Metadata formats: add a new `IMetadataExtractor` implementation and register it in `AppServices` composite.
 - Thumbnails: use `IImageIndexService` to schedule/preload; pipeline supports progressive upgrade and cache tuning.
 - Search: extend tokenization if you add new fields to `ImageMetadata`.
 

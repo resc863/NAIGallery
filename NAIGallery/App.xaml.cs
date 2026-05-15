@@ -1,11 +1,7 @@
 ﻿using System;
 using Microsoft.UI.Xaml;
 using NAIGallery.Services;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
-using Microsoft.Extensions.Logging;
-using NAIGallery.Services.Metadata;
-using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Threading;
@@ -23,52 +19,18 @@ public partial class App : Application
     /// <summary>Currently active main window instance.</summary>
     public Window? MainWindow => _window;
     
-    /// <summary>Service provider hosting application singletons.</summary>
-    public IServiceProvider Services { get; }
+    /// <summary>Application singleton container.</summary>
+    public AppServices Services { get; }
 
     public T GetRequiredService<T>() where T : notnull => Services.GetRequiredService<T>();
 
-    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(PngMetadataExtractor))]
-    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicConstructors, typeof(CompositeMetadataExtractor))]
     public App()
     {
         InitializeComponent();
         UnhandledException += App_UnhandledException;
 
-        Services = ConfigureServices();
+        Services = new AppServices();
         ApplyPersistedSettings();
-    }
-
-    private static IServiceProvider ConfigureServices()
-    {
-        var services = new ServiceCollection();
-        
-        services.AddLogging(builder =>
-        {
-#if DEBUG
-            builder.SetMinimumLevel(LogLevel.Debug);
-#else
-            builder.SetMinimumLevel(LogLevel.Information);
-#endif
-            builder.AddDebug();
-        });
-
-        services.AddSingleton<PngMetadataExtractor>();
-        services.AddSingleton<ITokenSearchIndex, TokenSearchIndex>();
-        services.AddSingleton<IThumbnailPipeline>(sp => new ThumbnailPipeline(
-            AppDefaults.DefaultThumbnailCapacityBytes,
-            sp.GetService<ILogger<ThumbnailPipeline>>()));
-
-        // Metadata extractors (composite allows future format additions)
-        services.AddSingleton<IMetadataExtractor>(sp => new CompositeMetadataExtractor([
-            sp.GetRequiredService<PngMetadataExtractor>()
-        ]));
-
-        services.AddSingleton<ImageIndexService>();
-        services.AddSingleton<IImageIndexService>(sp => sp.GetRequiredService<ImageIndexService>());
-        services.AddSingleton<ViewModels.GalleryViewModel>();
-        
-        return services.BuildServiceProvider();
     }
 
     private void ApplyPersistedSettings()
@@ -77,7 +39,7 @@ public partial class App : Application
         {
             var settings = AppSettings.Load();
             if (settings.ThumbCacheCapacity.HasValue && 
-                Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
+                Services.ImageIndexService is IImageIndexService svc)
             {
                 svc.ThumbnailCacheCapacity = settings.ThumbCacheCapacity.Value;
             }
@@ -137,7 +99,7 @@ public partial class App : Application
     {
         _window = new MainWindow();
         
-        if (Services.GetService(typeof(IImageIndexService)) is IImageIndexService svc)
+        if (Services.ImageIndexService is IImageIndexService svc)
         {
             try
             {

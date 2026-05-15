@@ -17,7 +17,6 @@ using Microsoft.UI.Xaml.Media.Animation;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace NAIGallery.Views;
 

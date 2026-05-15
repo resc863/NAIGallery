@@ -29,9 +29,21 @@ public sealed partial class GalleryPage
         var target = FindTargetElementForPath(GalleryView, path);
         if (target != null)
         {
-            try { back.Configuration = new DirectConnectedAnimationConfiguration(); back.TryStart(target); } catch { }
+            try
+            {
+                back.Configuration = new DirectConnectedAnimationConfiguration();
+                if (!back.TryStart(target))
+                    back.Cancel();
+            }
+            catch
+            {
+                try { back.Cancel(); } catch { }
+            }
             _pendingBackPath = null; return;
         }
+
+        try { back.Cancel(); } catch { }
+        _pendingBackPath = null;
     }
 
     private void TryNavigateWithCA(FrameworkElement fe, string path)
@@ -54,14 +66,21 @@ public sealed partial class GalleryPage
     private static FrameworkElement? FindTargetElementForPath(DependencyObject root, string path)
     {
         var q = new System.Collections.Generic.Queue<DependencyObject>(); q.Enqueue(root);
+        FrameworkElement? fallback = null;
         while (q.Count > 0)
         {
             var d = q.Dequeue();
-            if (d is FrameworkElement fe && fe.Tag is string t && string.Equals(t, path, StringComparison.OrdinalIgnoreCase)) return fe;
+            if (d is FrameworkElement fe && fe.Tag is string t && string.Equals(t, path, StringComparison.OrdinalIgnoreCase))
+            {
+                if (fe is Image img && img.Name == "connectedElement")
+                    return img;
+
+                fallback ??= fe;
+            }
             int count = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(d);
             for (int i = 0; i < count; i++) q.Enqueue(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(d, i));
         }
-        return null;
+        return fallback;
     }
 
     // Legacy methods kept for compatibility but now no-op

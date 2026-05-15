@@ -6,9 +6,10 @@ using System.Linq;
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using CommunityToolkit.Mvvm.ComponentModel;
-using CommunityToolkit.Mvvm.Input;
 using Microsoft.UI.Dispatching;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
+using System.Windows.Input;
 
 namespace NAIGallery.ViewModels;
 
@@ -16,25 +17,60 @@ public enum GallerySortField { Name, Date }
 public enum GallerySortDirection { Asc, Desc }
 
 /// <summary>
-/// ViewModel for the gallery page using CommunityToolkit.Mvvm to reduce boilerplate.
+/// ViewModel for the gallery page.
 /// </summary>
-public partial class GalleryViewModel : ObservableObject, IDisposable
+public sealed class GalleryViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly IImageIndexService _indexService;
-    private readonly IAsyncRelayCommand<string> _indexFolderCommand;
+    private readonly AsyncCommand<string> _indexFolderCommand;
     private DispatcherQueue? _dispatcherQueue;
 
-    [ObservableProperty]
     private string _searchQuery = string.Empty;
+    public string SearchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (SetProperty(ref _searchQuery, value))
+            {
+                _ = ApplySearchAsync(throttle: true);
+                UpdateSuggestions();
+            }
+        }
+    }
 
-    [ObservableProperty]
     private GallerySortField _sortField = GallerySortField.Name;
+    public GallerySortField SortField
+    {
+        get => _sortField;
+        set
+        {
+            if (SetProperty(ref _sortField, value))
+                ApplySortOnly();
+        }
+    }
 
-    [ObservableProperty]
     private GallerySortDirection _sortDirection = GallerySortDirection.Asc;
+    public GallerySortDirection SortDirection
+    {
+        get => _sortDirection;
+        set
+        {
+            if (SetProperty(ref _sortDirection, value))
+                ApplySortOnly();
+        }
+    }
 
-    [ObservableProperty]
     private bool _isIndexing;
+    public bool IsIndexing
+    {
+        get => _isIndexing;
+        private set
+        {
+            if (SetProperty(ref _isIndexing, value) && !value)
+                UpdateSuggestions();
+        }
+    }
 
     private bool _searchAndMode;
     public bool SearchAndMode
@@ -64,6 +100,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
     public ObservableCollection<ImageMetadata> Images { get; } = [];
     public ObservableCollection<string> TagSuggestions { get; } = [];
 
+    public event PropertyChangedEventHandler? PropertyChanged;
     public event EventHandler? ImagesChanged;
     public event EventHandler? BeforeCollectionRefresh;
     public event EventHandler? AfterCollectionRefresh;
@@ -71,7 +108,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
     public GalleryViewModel(IImageIndexService service)
     {
         _indexService = service;
-        _indexFolderCommand = new AsyncRelayCommand<string>(IndexFolderAsync);
+        _indexFolderCommand = new AsyncCommand<string>(IndexFolderAsync);
         LoadSettings();
         
         _indexService.IndexChanged += OnIndexChanged;
@@ -119,40 +156,66 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
         _dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () => action());
     }
 
-    public IAsyncRelayCommand<string> IndexFolderCommand => _indexFolderCommand;
-
-    partial void OnSearchQueryChanged(string value)
+    private Task RunOnDispatcherDeferredAsync(Action action, CancellationToken cancellationToken = default)
     {
-        _ = ApplySearchAsync(throttle: true);
-        UpdateSuggestions();
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled(cancellationToken);
+
+        if (_dispatcherQueue is null || _dispatcherQueue.HasThreadAccess)
+        {
+            action();
+            return Task.CompletedTask;
+        }
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_dispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                tcs.TrySetCanceled(cancellationToken);
+                return;
+            }
+
+            try
+            {
+                action();
+                tcs.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        }))
+        {
+            tcs.TrySetCanceled(cancellationToken);
+        }
+
+        return tcs.Task;
     }
 
-    partial void OnSortFieldChanged(GallerySortField value)
-    {
-        ApplySortOnly();
-    }
-
-    partial void OnSortDirectionChanged(GallerySortDirection value)
-    {
-        ApplySortOnly();
-    }
+    public ICommand IndexFolderCommand => _indexFolderCommand;
 
     public async Task IndexFolderAsync(string? folder)
     {
         if (string.IsNullOrWhiteSpace(folder) || IsIndexing) return;
         
         IsIndexing = true;
+        var completed = false;
         try
         {
             await _indexService.IndexFolderAsync(folder);
             await ApplySearchAsync();
-            
-            // 인덱싱 완료 후 ImagesChanged 이벤트 발생
-            RunOnDispatcher(() => ImagesChanged?.Invoke(this, EventArgs.Empty));
+            completed = true;
         }
         finally
         {
             IsIndexing = false;
+
+            if (completed)
+            {
+                // 인덱싱 완료 후 ImagesChanged 이벤트 발생
+                RunOnDispatcher(() => ImagesChanged?.Invoke(this, EventArgs.Empty));
+            }
         }
     }
 
@@ -211,7 +274,7 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
             
             var sorted = Sort(results).ToList();
             
-            RunOnDispatcherDeferred(() => UpdateImagesCollection(sorted));
+            await RunOnDispatcherDeferredAsync(() => UpdateImagesCollection(sorted), cts.Token);
         }
         catch (OperationCanceledException) { }
     }
@@ -264,17 +327,24 @@ public partial class GalleryViewModel : ObservableObject, IDisposable
         catch { }
     }
 
-    partial void OnIsIndexingChanged(bool value)
-    {
-        if (!value)
-            UpdateSuggestions();
-    }
-
     public void Dispose()
     {
         _indexService.IndexChanged -= OnIndexChanged;
         var cts = Interlocked.Exchange(ref _searchCts, null);
         cts?.Cancel();
         cts?.Dispose();
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+
+    private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+            return false;
+
+        field = value;
+        OnPropertyChanged(propertyName);
+        return true;
     }
 }

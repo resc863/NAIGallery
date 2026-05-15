@@ -8,11 +8,11 @@ internal static class AppDefaults
 {
     #region Thumbnail Cache
     
-    /// <summary>Logical capacity hint for thumbnail cache.</summary>
-    public const int DefaultThumbnailCapacityBytes = 5000;
+    /// <summary>Decoded thumbnail cache capacity in bytes.</summary>
+    public const int DefaultThumbnailCapacityBytes = 256 * 1024 * 1024;
     
-    /// <summary>Minimum allowed thumbnail cache capacity.</summary>
-    public const int MinThumbnailCacheCapacity = 100;
+    /// <summary>Minimum allowed thumbnail cache capacity in bytes.</summary>
+    public const int MinThumbnailCacheCapacity = 16 * 1024 * 1024;
     
     /// <summary>Minimum size for small thumbnails (progressive loading).</summary>
     public const int SmallThumbMin = 96;
@@ -21,7 +21,7 @@ internal static class AppDefaults
     public const int SmallThumbMax = 160;
     
     /// <summary>Number of thumbnails to apply per UI drain batch.</summary>
-    public const int DrainBatch = 8; // Reduced batch size for thumbnails
+    public const int DrainBatch = 32;
     
     #endregion
 

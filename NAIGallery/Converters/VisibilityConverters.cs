@@ -7,7 +7,7 @@ namespace NAIGallery.Converters;
 /// <summary>
 /// Base class for visibility converters providing common invert logic.
 /// </summary>
-public abstract class VisibilityConverterBase : IValueConverter
+public abstract partial class VisibilityConverterBase : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, string language)
     {
@@ -30,7 +30,7 @@ public abstract class VisibilityConverterBase : IValueConverter
 /// Default: true → Visible, false → Collapsed.
 /// With parameter "Invert": true → Collapsed, false → Visible.
 /// </summary>
-public sealed class BoolToVisibilityConverter : VisibilityConverterBase
+public sealed partial class BoolToVisibilityConverter : VisibilityConverterBase
 {
     protected override bool EvaluateVisibility(object value) 
         => value is bool b && b;
@@ -41,7 +41,7 @@ public sealed class BoolToVisibilityConverter : VisibilityConverterBase
 /// Default: null → Visible, non-null → Collapsed (useful for loading labels).
 /// With parameter "Invert": null → Collapsed, non-null → Visible.
 /// </summary>
-public sealed class NullToVisibilityConverter : VisibilityConverterBase
+public sealed partial class NullToVisibilityConverter : VisibilityConverterBase
 {
     protected override bool EvaluateVisibility(object value) 
         => value == null;

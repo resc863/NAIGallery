@@ -18,7 +18,6 @@ Main ViewModel for the gallery page providing search, sorting, and indexing func
 
 **Collections:**
 - `Images`: ObservableCollection of `ImageMetadata`
-- `ImagesView`: AdvancedCollectionView for sorting/filtering
 - `TagSuggestions`: ObservableCollection for autocomplete
 
 **Events:**
@@ -27,14 +26,14 @@ Main ViewModel for the gallery page providing search, sorting, and indexing func
 - `AfterCollectionRefresh`: After collection update (for scroll position restore)
 
 **Commands:**
-- `IndexFolderCommand`: AsyncRelayCommand to index a folder
+- `IndexFolderCommand`: small in-repo async `ICommand` implementation to avoid CommunityToolkit in NativeAOT builds
 
 **Key methods:**
 - `SetDispatcherQueue(DispatcherQueue)`: Must be called from UI thread
 - `IndexFolderAsync(string)`: Triggers folder indexing
 
 ## Notes
-- Uses CommunityToolkit.Mvvm source generators (`[ObservableProperty]`).
+- Uses manual `INotifyPropertyChanged` and `SetProperty` so the ViewModel has no MVVM Toolkit dependency in NativeAOT builds.
 - Debounced search (250ms) applies filters and reorders images.
-- Sort changes trigger `ApplySortToView()` using `AdvancedCollectionView.SortDescriptions`.
+- Sort changes reorder `Images` through the ViewModel's in-memory result list.
 - Uses `DispatcherQueue.TryEnqueue()` for UI-safe updates from background threads.

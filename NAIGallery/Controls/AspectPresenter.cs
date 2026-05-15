@@ -10,7 +10,7 @@ namespace NAIGallery.Controls;
 /// Else if Width is provided (non-NaN) it computes Height = Width / AspectRatio.
 /// Otherwise it falls back to available size heuristics.
 /// </summary>
-public sealed class AspectPresenter : ContentControl
+public sealed partial class AspectPresenter : ContentControl
 {
     private const double DefaultAspectRatio = 1.0;
 

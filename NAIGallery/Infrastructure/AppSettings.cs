@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Text.Json;
 
 namespace NAIGallery;
 
@@ -51,7 +50,7 @@ public sealed class AppSettings
             if (File.Exists(path))
             {
                 var json = File.ReadAllText(path);
-                return JsonSerializer.Deserialize<AppSettings>(json) ?? new AppSettings();
+                return System.Text.Json.JsonSerializer.Deserialize(json, AppJsonContext.Default.AppSettings) ?? new AppSettings();
             }
         }
         catch { }
@@ -67,7 +66,7 @@ public sealed class AppSettings
         try
         {
             var path = GetSettingsPath();
-            var json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+            var json = System.Text.Json.JsonSerializer.Serialize(this, AppJsonContext.Default.AppSettings);
             File.WriteAllText(path, json);
         }
         catch { }

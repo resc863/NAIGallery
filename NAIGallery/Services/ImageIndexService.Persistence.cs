@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
 
 namespace NAIGallery.Services;
@@ -20,7 +19,7 @@ public partial class ImageIndexService
         try
         {
             var json = await File.ReadAllTextAsync(path).ConfigureAwait(false);
-            var list = System.Text.Json.JsonSerializer.Deserialize<List<ImageMetadata>>(json) ?? new();
+            var list = System.Text.Json.JsonSerializer.Deserialize(json, AppJsonContext.Default.ListImageMetadata) ?? new();
             int loaded = 0, withDimensions = 0;
             
             foreach (var meta in list)
@@ -41,11 +40,11 @@ public partial class ImageIndexService
             }
             
             InvalidateSorted();
-            _logger?.LogInformation("Loaded {Loaded} images from index, {WithDimensions} have original dimensions", loaded, withDimensions);
+            AppLog.Info($"Loaded {loaded} images from index, {withDimensions} have original dimensions");
         }
         catch (Exception ex)
         {
-            _logger?.LogWarning(ex, "Failed to load image index from {Path}", path);
+            AppLog.Warning($"Failed to load image index from {path}", ex);
         }
     }
 
@@ -85,7 +84,7 @@ public partial class ImageIndexService
                     OriginalHeight = m.OriginalHeight
                 }).ToList();
                 
-            var json = System.Text.Json.JsonSerializer.Serialize(list, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            var json = System.Text.Json.JsonSerializer.Serialize(list, AppJsonContext.Default.ListImageMetadata);
             await File.WriteAllTextAsync(temp, json).ConfigureAwait(false);
             File.Copy(temp, path, true);
             File.Delete(temp);
@@ -93,7 +92,7 @@ public partial class ImageIndexService
         catch
         {
             try { if (File.Exists(temp)) File.Delete(temp); } catch { }
-            _logger?.LogWarning("Failed to save image index to {Path}", path);
+            AppLog.Warning($"Failed to save image index to {path}");
         }
     }
     

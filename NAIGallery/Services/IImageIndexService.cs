@@ -69,7 +69,7 @@ public interface IImageIndexService
     /// <summary>Reset pending thumbnail scheduling state.</summary>
     void ResetPendingState();
     
-    /// <summary>Adjust thumbnail cache capacity (entry count).</summary>
+    /// <summary>Adjust decoded thumbnail cache capacity in bytes.</summary>
     int ThumbnailCacheCapacity { get; set; }
     
     /// <summary>Reset and clear in-memory thumbnail cache.</summary>

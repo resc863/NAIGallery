@@ -68,15 +68,13 @@ public sealed partial class GalleryPage
 
             if (intermediate)
             {
-                // 스크롤 중에는 적용 일시 중지
-                _service.SetApplySuspended(true);
-                
                 _scrollIdleCts?.Cancel();
                 _scrollIdleCts = new CancellationTokenSource();
                 _idleFillCts?.Cancel();
                 
                 // 고속 스크롤 중에는 더 긴 간격으로만 처리
                 long minInterval = isFastScrolling ? TimeSpan.TicksPerMillisecond * 100 : MinScrollProcessIntervalTicks;
+                _service.SetApplySuspended(isFastScrolling);
                 
                 if (now - _lastScrollProcessTicks >= minInterval)
                 {
@@ -188,7 +186,7 @@ public sealed partial class GalleryPage
                         int maxCheck = Math.Min(host.Children.Count, 100); // 100개로 축소
                         for (int c = 0; c < maxCheck; c++)
                         {
-                            if (host.Children[c] is FrameworkElement fe && fe.DataContext is ImageMetadata meta)
+                            if (host.Children[c] is FrameworkElement fe && TryResolveTileMetadata(fe, out var meta))
                             {
                                 int cur = meta.ThumbnailPixelWidth ?? 0;
                                 if (meta.Thumbnail == null || cur + 32 < snap.DesiredWidth)
@@ -398,6 +396,9 @@ public sealed partial class GalleryPage
             {
                 try
                 {
+                    if (GalleryView?.Layout is NAIGallery.Controls.MasonryLayout masonryLayout)
+                        masonryLayout.ResetLayoutCache();
+
                     GalleryView?.InvalidateMeasure();
                     GalleryView?.InvalidateArrange();
                     EnqueueVisibleStrict();

@@ -8,7 +8,6 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
 using NAIGallery.Models;
@@ -23,7 +22,6 @@ namespace NAIGallery.Services;
 /// </summary>
 internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
 {
-    private readonly ILogger? _logger;
     private readonly ThumbnailCache _cache;
     private DispatcherQueue? _dispatcher;
     
@@ -64,9 +62,8 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     private sealed record ThumbnailRequest(ImageMetadata Meta, int Width, bool HighPriority);
     private sealed record ApplyRequest(ImageMetadata Meta, PixelData Data, int Width);
 
-    public ThumbnailPipeline(int capacityBytes, ILogger? logger = null)
+    public ThumbnailPipeline(int capacityBytes)
     {
-        _logger = logger;
         _cache = new ThumbnailCache(capacityBytes);
         _maxWorkers = Math.Clamp(Environment.ProcessorCount, 2, 8);
         _decodeGate = new SemaphoreSlim(_maxWorkers, _maxWorkers);
@@ -161,7 +158,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    _logger?.LogDebug(ex, "Worker error");
+                    AppLog.Debug("Worker error", ex);
                 }
             }
         }
@@ -175,15 +172,16 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
     {
         var meta = request.Meta;
         int width = request.Width;
-        string filePath = meta.FilePath;
         bool decodeGateHeld = false;
         bool applyQueued = false;
         
-        if (meta?.FilePath == null || !File.Exists(filePath))
+        if (string.IsNullOrWhiteSpace(meta.FilePath) || !File.Exists(meta.FilePath))
         {
             meta.IsLoadingThumbnail = false;
             return;
         }
+
+        string filePath = meta.FilePath;
 
         if (_scheduledWidths.TryGetValue(filePath, out var scheduledWidth) && scheduledWidth > width)
             return;
@@ -366,7 +364,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         catch (Exception ex)
         {
             Telemetry.DecodeUnknownErrors.Add(1);
-            _logger?.LogDebug(ex, "Decode error: {File}", filePath);
+            AppLog.Debug($"Decode error: {filePath}", ex);
             return null;
         }
         finally
@@ -419,13 +417,13 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         try
         {
             int count = 0;
-            while (_applyQueue.TryDequeue(out var request) && count < 16)
+            while (_applyQueue.TryDequeue(out var request) && count < AppDefaults.DrainBatch)
             {
                 Interlocked.Decrement(ref _pendingApplyCount);
                 await ApplyThumbnailAsync(request);
                 count++;
                 
-                if (count % 4 == 0)
+                if (count % 8 == 0)
                     await Task.Yield();
             }
         }
@@ -483,7 +481,7 @@ internal sealed class ThumbnailPipeline : IThumbnailPipeline, IDisposable
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Apply error");
+            AppLog.Debug("Apply error", ex);
         }
         finally
         {

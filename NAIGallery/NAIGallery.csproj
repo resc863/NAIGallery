@@ -10,10 +10,15 @@
     <PublishProfile>win-$(Platform).pubxml</PublishProfile>
     <UseWinUI>true</UseWinUI>
     <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
-    <!-- AOT / trimming friendly settings -->
+    <!-- NativeAOT / trimming friendly settings -->
+    <PublishAot>true</PublishAot>
+    <TrimMode>full</TrimMode>
     <InvariantGlobalization Condition="'$(Configuration)' != 'Debug'">true</InvariantGlobalization>
     <IlcGenerateNativeIntInterop>true</IlcGenerateNativeIntInterop>
+    <EnableUnsafeBlocks>true</EnableUnsafeBlocks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DebuggerSupport Condition="'$(Configuration)' != 'Debug'">false</DebuggerSupport>
   </PropertyGroup>
 
@@ -39,16 +44,15 @@
     <ProjectCapability Include="Msix" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
-    <PackageReference Include="CommunityToolkit.WinUI.Controls.Primitives" Version="8.2.251219" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.8" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.8" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.1839" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.3.1">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
   </ItemGroup>
   <ItemGroup>
     <None Update="Assets\Gemini_Generated_Image_7yidwu7yidwu7yid.png">

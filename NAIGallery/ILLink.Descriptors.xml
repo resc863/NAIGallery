@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<linker>
+  <assembly fullname="NAIGallery">
+    <type fullname="NAIGallery.ViewModels.GalleryViewModel" preserve="all" />
+    <type fullname="NAIGallery.Models.ImageMetadata" preserve="all" />
+    <type fullname="NAIGallery.Models.CharacterPrompt" preserve="all" />
+    <type fullname="NAIGallery.Models.ParamEntry" preserve="all" />
+    <type fullname="NAIGallery.Converters.BoolToVisibilityConverter" preserve="all" />
+    <type fullname="NAIGallery.Converters.NullToVisibilityConverter" preserve="all" />
+  </assembly>
+</linker>

@@ -153,7 +153,7 @@ public sealed partial class GalleryPage
         for (int c = 0; c < host.Children.Count; c++)
         {
             if (host.Children[c] is not FrameworkElement fe) continue;
-            if (fe.DataContext is not ImageMetadata meta) continue;
+            if (!TryResolveTileMetadata(fe, out var meta)) continue;
             double y; double h;
             try
             {

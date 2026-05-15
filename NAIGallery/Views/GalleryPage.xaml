@@ -6,8 +6,7 @@
     xmlns:models="using:NAIGallery.Models"
     xmlns:vm="using:NAIGallery.ViewModels"
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
-    xmlns:controls="using:NAIGallery.Controls"
-    xmlns:toolkit="using:CommunityToolkit.WinUI.Controls">
+    xmlns:controls="using:NAIGallery.Controls">
     <Grid RowDefinitions="Auto,*" ColumnDefinitions="*" KeyDown="Root_KeyDown" KeyUp="Root_KeyUp" PointerWheelChanged="Root_PointerWheelChanged">
         <!-- Top bar with centered search -->
         <RelativePanel x:Name="TopBar" Grid.Row="0" Margin="8" VerticalAlignment="Top">
@@ -38,56 +37,60 @@
                             SuggestionChosen="SearchBox_SuggestionChosen" />
         </RelativePanel>
 
-        <!-- ScrollViewer hosting ItemsRepeater using toolkit StaggeredLayout (masonry) -->
+        <!-- ScrollViewer hosting ItemsRepeater with an in-repo masonry layout. -->
         <ScrollViewer x:Name="RepeaterScroll" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
             <muxc:ItemsRepeater x:Name="GalleryView" ItemsSource="{x:Bind ViewModel.Images, Mode=OneWay}">
                 <muxc:ItemsRepeater.Layout>
-                    <toolkit:StaggeredLayout DesiredColumnWidth="{x:Bind MinItemWidth, Mode=OneWay}" />
+                    <controls:MasonryLayout
+                        MinItemWidth="{x:Bind MinItemWidth, Mode=OneWay}"
+                        ItemsSource="{x:Bind ViewModel.Images, Mode=OneWay}"
+                        MinColumnSpacing="8"
+                        MinRowSpacing="8" />
                 </muxc:ItemsRepeater.Layout>
                 <muxc:ItemsRepeater.ItemTemplate>
                     <DataTemplate x:DataType="models:ImageMetadata">
-                        <controls:AspectPresenter
-                            Width="{Binding ElementName=PageRoot, Path=TileLineHeight}"
-                            AspectRatio="{x:Bind AspectRatio, Mode=OneWay}">
-                            <Border x:Name="TileBorder"
-                                    Tag="{x:Bind FilePath}"
-                                    Margin="4"
-                                    BorderBrush="Gray"
-                                    BorderThickness="1"
-                                    CornerRadius="4"
-                                    Background="#20808080"
-                                    Tapped="Item_Tapped"
-                                    PointerEntered="Tile_PointerEntered"
-                                    PointerExited="Tile_PointerExited">
-                                <Grid Background="Transparent">
-                                    <!-- Placeholder for loading state - 실제 로딩 중인 항목만 표시 -->
-                                    <Grid x:Name="PlaceholderGrid"
-                                          Background="#10808080"
-                                          Visibility="{x:Bind IsLoadingThumbnail, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
-                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-                                            <ProgressRing IsActive="True" Width="24" Height="24" />
-                                            <TextBlock Text="로딩 중..."
-                                                       Foreground="Gray"
-                                                       FontSize="12"
-                                                       HorizontalAlignment="Center" />
-                                        </StackPanel>
-                                    </Grid>
-                                    
-                                    <Image x:Name="connectedElement"
-                                           Tag="{x:Bind FilePath}"
-                                           Source="{x:Bind Thumbnail, Mode=OneWay}"
-                                           Stretch="UniformToFill"
-                                           HorizontalAlignment="Stretch"
-                                           VerticalAlignment="Stretch"
-                                           ImageOpened="Tile_ImageOpened"
-                                           RenderTransformOrigin="0.5,0.5">
-                                        <Image.RenderTransform>
-                                            <ScaleTransform ScaleX="1" ScaleY="1" />
-                                        </Image.RenderTransform>
-                                    </Image>
+                        <!-- Use runtime Binding here so thumbnail PropertyChanged updates repaint realized tiles immediately. -->
+                        <Border x:Name="TileBorder"
+                                Tag="{Binding FilePath}"
+                                Margin="0"
+                                BorderBrush="Gray"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Background="#20808080"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"
+                                Loaded="Tile_Loaded"
+                                Tapped="Item_Tapped"
+                                PointerEntered="Tile_PointerEntered"
+                                PointerExited="Tile_PointerExited">
+                            <Grid Background="Transparent">
+                                <!-- Placeholder for loading state - 실제 로딩 중인 항목만 표시 -->
+                                <Grid x:Name="PlaceholderGrid"
+                                      Background="#10808080"
+                                      Visibility="{Binding IsLoadingThumbnail, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                                        <ProgressRing IsActive="True" Width="24" Height="24" />
+                                        <TextBlock Text="로딩 중..."
+                                                   Foreground="Gray"
+                                                   FontSize="12"
+                                                   HorizontalAlignment="Center" />
+                                    </StackPanel>
                                 </Grid>
-                            </Border>
-                        </controls:AspectPresenter>
+
+                                <Image x:Name="connectedElement"
+                                       Tag="{Binding FilePath}"
+                                       Source="{Binding Thumbnail, Mode=OneWay}"
+                                       Stretch="UniformToFill"
+                                       HorizontalAlignment="Stretch"
+                                       VerticalAlignment="Stretch"
+                                       ImageOpened="Tile_ImageOpened"
+                                       RenderTransformOrigin="0.5,0.5">
+                                    <Image.RenderTransform>
+                                        <ScaleTransform ScaleX="1" ScaleY="1" />
+                                    </Image.RenderTransform>
+                                </Image>
+                            </Grid>
+                        </Border>
                     </DataTemplate>
                 </muxc:ItemsRepeater.ItemTemplate>
             </muxc:ItemsRepeater>

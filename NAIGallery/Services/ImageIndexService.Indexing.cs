@@ -5,7 +5,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using NAIGallery.Models;
 
 namespace NAIGallery.Services;
@@ -290,7 +289,7 @@ public partial class ImageIndexService
         }
         catch (Exception ex)
         {
-            _logger?.LogDebug(ex, "Failed to refresh metadata for {File}", meta.FilePath);
+            AppLog.Debug($"Failed to refresh metadata for {meta.FilePath}", ex);
         }
     }
     
